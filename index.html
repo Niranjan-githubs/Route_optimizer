@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>College Bus Route Optimization System</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
+    <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><i class="fas fa-bus"></i> College Bus Route Optimization System</h1>
+            <p>Optimize bus routes for maximum efficiency, covering maximum stops with minimal distance on major roads. Built for Chennai and nearby regions with Google Route Optimization API.</p>
+        </div>
+        
+        <div class="main-content">
+            <div class="control-panel">
+                <div class="section">
+                    <h3><i class="fas fa-upload"></i> Data Input</h3>
+                    
+                    <div class="file-input">
+                        <label for="studentFile">Student Assignments CSV:</label>
+                        <input type="file" id="studentFile" accept=".csv" />
+                    </div>
+                    
+                    <div class="file-input">
+                        <label for="stopsFile">Snapped Stops CSV:</label>
+                        <input type="file" id="stopsFile" accept=".csv" />
+                    </div>
+                    
+                    <div class="file-input">
+                        <label for="depotsFile">Depots CSV:</label>
+                        <input type="file" id="depotsFile" accept=".csv" />
+                    </div>
+                    
+                    <button class="btn" onclick="loadData()">
+                        <i class="fas fa-database"></i> Load Data
+                    </button>
+                </div>
+                
+                <div class="section">
+                    <h3><i class="fas fa-cogs"></i> Configuration</h3>
+                    
+                    <div class="file-input">
+                        <label for="maxCapacity">Bus Capacity:</label>
+                        <input type="number" id="maxCapacity" value="55" min="1" max="100" />
+                    </div>
+                    
+                    <div class="file-input">
+                        <label for="shiftTime">Shift Time:</label>
+                        <select id="shiftTime">
+                            <option value="8am">8:00 AM</option>
+                            <option value="10am">10:00 AM</option>
+                            <option value="3pm">3:00 PM</option>
+                            <option value="5pm">5:00 PM</option>
+                        </select>
+                    </div>
+                    
+                    <div class="file-input">
+                        <label for="dayOfWeek">Day of Week:</label>
+                        <select id="dayOfWeek">
+                            <option value="monday">Monday</option>
+                            <option value="tuesday">Tuesday</option>
+                            <option value="wednesday">Wednesday</option>
+                            <option value="thursday">Thursday</option>
+                            <option value="friday">Friday</option>
+                            <option value="saturday">Saturday</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h3><i class="fas fa-route"></i> Optimization</h3>
+                    
+                    <button class="btn btn-success" onclick="optimizeRoutes()" id="optimizeBtn" disabled>
+                        <i class="fas fa-magic"></i> Optimize Routes
+                    </button>
+                    
+                    <button class="btn btn-info" onclick="visualizeData()">
+                        <i class="fas fa-map"></i> Show Current Data
+                    </button>
+                    
+                    <button class="btn btn-warning" onclick="exportResults()" id="exportBtn" disabled>
+                        <i class="fas fa-download"></i> Export Results
+                    </button>
+                </div>
+
+                <div class="section" id="routeSelectorSection" style="display: none;">
+                    <h3><i class="fas fa-filter"></i> Route Selector</h3>
+                    <div class="route-selector-controls">
+                        <label class="route-selector-item">
+                            <input type="radio" name="routeSelection" id="selectAllRoutes" checked onchange="toggleAllRoutes()">
+                            <span>Show All Routes</span>
+                        </label>
+                        <div id="individualRouteSelectors" class="individual-routes">
+                            <!-- Individual route radio buttons will be added here dynamically -->
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="status" class="status"></div>
+                
+                <div id="metrics" class="metrics" style="display: none;">
+                    <div class="metric-card">
+                        <h4>Total Students</h4>
+                        <div class="value" id="totalStudents">0</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Required Buses</h4>
+                        <div class="value" id="requiredBuses">0</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Total Stops</h4>
+                        <div class="value" id="totalStops">0</div>
+                    </div>
+                    <div class="metric-card">
+                        <h4>Available Depots</h4>
+                        <div class="value" id="totalDepots">0</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="map-container">
+                <h3><i class="fas fa-map-marked-alt"></i> Route Visualization</h3>
+                <div id="map"></div>
+            </div>
+        </div>
+        
+        <div class="results-panel" id="resultsPanel" style="display: none;">
+            <h3><i class="fas fa-chart-line"></i> Optimization Results</h3>
+            <div id="routesList" class="routes-list"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    
+    <!-- Configuration -->
+    <script src="config/config.js"></script>
+    
+    <!-- Utilities -->
+    <script src="js/utils/constants.js"></script>
+    <script src="js/utils/helpers.js"></script>
+    <script src="js/utils/api.js"></script>
+    
+    <!-- Data handling -->
+    <script src="js/data/dataLoader.js"></script>
+    <script src="js/data/dataValidator.js"></script>
+    <script src="js/data/dataProcessor.js"></script>
+    
+    <!-- Optimization -->
+    <script src="js/optimization/optimizer.js"></script>
+    <script src="js/optimization/algorithms.js"></script>
+    <script src="js/optimization/googleAPI.js"></script>
+    
+    <!-- Visualization -->
+    <script src="js/visualization/mapManager.js"></script>
+    <script src="js/visualization/routeRenderer.js"></script>
+    <script src="js/visualization/routeTracer.js"></script>
+    
+    <!-- UI components -->
+    <script src="js/ui/statusManager.js"></script>
+    <script src="js/ui/metricsDisplay.js"></script>
+    <script src="js/ui/exportManager.js"></script>
+    <script src="js/ui/routeSelector.js"></script>
+    
+    <!-- Main application -->
+    <script src="js/app.js"></script>
+</body>
+</html>
