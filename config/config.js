@@ -57,16 +57,38 @@ const CONFIG = {
     },
     
     // Visualization Configuration
-    visualization: {
-        colors: ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3', '#54A0FF', '#5F27CD'],
-        routeWeight: 5,
-        routeOpacity: 0.8,
-        markerSizes: {
-            college: 30,
-            depot: 24,
-            stop: 24
-        }
-    },
+    // Visualization Configuration
+visualization: {
+    colors: [
+        // Reds
+        '#FF0000', '#FF4D4D', '#FF9999', '#FFE5E5', '#CC0000',
+        // Blues
+        '#0000FF', '#4D4DFF', '#9999FF', '#E5E5FF', '#0000CC',
+        // Greens
+        '#00FF00', '#4DFF4D', '#99FF99', '#E5FFE5', '#00CC00',
+        // Purples
+        '#800080', '#B366B3', '#D9B3D9', '#F2E6F2', '#660066',
+        // Oranges
+        '#FFA500', '#FFB84D', '#FFD699', '#FFF2E5', '#CC8400',
+        // Teals
+        '#008080', '#33B3B3', '#80CCCC', '#E5F2F2', '#006666',
+        // Pinks
+        '#FF69B4', '#FF99CC', '#FFC6E0', '#FFE5F0', '#CC5490',
+        // Browns
+        '#8B4513', '#B37349', '#D9B3A3', '#F2E6E0', '#663219',
+        // Limes
+        '#32CD32', '#66D966', '#99E699', '#E5F5E5', '#269926',
+        // Indigos
+        '#4B0082', '#7A33B3', '#B380CC', '#EBE5F2', '#3C0066'
+    ],
+    routeWeight: 5,
+    routeOpacity: 0.8,
+    markerSizes: {
+        college: 30,
+        depot: 24,
+        stop: 24
+    }
+},
     
     // Optimization Parameters
     optimization: {

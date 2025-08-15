@@ -78,11 +78,16 @@ function displayResults() {
         const stopsList = route.stops.map(stop => 
             `Stop ${stop.cluster_number} (${stop.num_students} students)`
         ).join(', ');
+
+        const distanceInfo = route.actualDistance ?
+            `<p><strong>RouteDistance: </strong> ${route.actualDistance.toFixed(1)} km</p>
+            <p><strong>Est. time: </strong> ${route.estimatedTime} min</p>` : '';
         
         routeItem.innerHTML = `
             <h5 style="color: ${color};">${route.busId}</h5>
             <p><strong>Depot:</strong> ${route.depot}</p>
             <p><strong>Total Students:</strong> ${route.totalStudents}/55 (${route.efficiency})</p>
+            ${distanceInfo}
             <p><strong>Stops (${route.stops.length}):</strong> ${stopsList}</p>
             <p><strong>Route Type:</strong> Major roads and highways prioritized</p>
         `;

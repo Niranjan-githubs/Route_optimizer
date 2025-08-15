@@ -72,9 +72,9 @@ async function optimizeRoutes() {
         
         // For demo purposes, using simulation. Replace with actual Google API call:
         const requestData = prepareOptimizationRequest();
-        //const results = await optimizeWithGoogleAPI(requestData);
+        //const results = await callGoogleRouteOptimization(requestData);
         
-        optimizationResults = await optimizeWithGoogleAPI(requestData);
+        optimizationResults = await optimizeWithGoogleAPI();
         
         if (!optimizationResults || optimizationResults.length === 0) {
             throw new Error('No optimization results generated');

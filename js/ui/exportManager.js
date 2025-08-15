@@ -24,6 +24,8 @@ function exportResults() {
                 road_name: stop.route_name,
                 total_students_in_bus: route.totalStudents,
                 bus_efficiency: route.efficiency,
+                route_distance_km: route.actualDistance ? route.actualDistance.toFixed(1) : 'N/A',
+                estimated_time_min: route.estimatedTime || 'N/A',
                 shift_time: document.getElementById('shiftTime').value,
                 day_of_week: document.getElementById('dayOfWeek').value
             });
