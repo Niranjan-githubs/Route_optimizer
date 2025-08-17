@@ -265,7 +265,7 @@ function updateRouteVisibility() {
         });
 
         // Update stop markers visibility
-        map.eachLayer((layer) => {
+        window.map.eachLayer((layer) => {
             if (layer instanceof L.Marker && !layer.options.className?.includes('route-')) {
                 const popupContent = layer.getPopup()?.getContent();
                 if (popupContent) {

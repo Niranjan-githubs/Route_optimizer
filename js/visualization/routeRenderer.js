@@ -1,5 +1,4 @@
 // Route visualization
-
 // Visualize current data on map
 function visualizeData() {
     if (!map || !stopsData.length || !depotsData.length) {

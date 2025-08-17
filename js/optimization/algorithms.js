@@ -118,3 +118,10 @@ async function optimizeRoutes() {
         document.getElementById('optimizeBtn').disabled = false;
     }
 }
+
+/*
+algorithms.js:115 Optimization error: ReferenceError: visualizeOptimizedRoutes is not defined
+    at optimizeRoutes (algorithms.js:107:9)
+optimizeRoutes	@	algorithms.js:115
+await in optimizeRoutes		
+onclick	@	index.html:77*/
