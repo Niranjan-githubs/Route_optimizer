@@ -1,5 +1,39 @@
 // Route selector functionality
 
+// ✅ SOLUTION 5: Display accessibility warnings in UI
+function displayRouteWithAccessibilityInfo(route) {
+    const routeElement = document.createElement('div');
+    routeElement.className = 'route-item';
+    
+    if (route.accessibility?.isValid === false) {
+        routeElement.classList.add('accessibility-warning');
+    }
+    
+    const accessibilityStatus = route.accessibility?.isValid ? 
+        '<span class="accessibility-ok">✅ Bus Accessible</span>' :
+        '<span class="accessibility-warning">⚠️ Accessibility Concerns</span>';
+    
+    const warningDetails = route.accessibility?.issues?.length > 0 ?
+        `<div class="warning-details">Issues: ${route.accessibility.issues.join(', ')}</div>` : '';
+    
+    routeElement.innerHTML = `
+        <div class="route-header">
+            <strong>${route.busId}</strong> - ${route.depot}
+            ${accessibilityStatus}
+        </div>
+        <div class="route-stats">
+            Students: ${route.totalStudents} | Distance: ${route.totalDistance} | Efficiency: ${route.efficiency}
+        </div>
+        ${warningDetails}
+        <div class="route-stops">
+            ${route.stops.map(stop => `<span class="stop">Stop ${stop.cluster_number} (${stop.num_students} students)</span>`).join(' → ')}
+        </div>
+    `;
+    
+    return routeElement;
+}
+
+
 // Initialize route selectors
 function initializeRouteSelectors() {
     const routeSelectorSection = document.getElementById('routeSelectorSection');
@@ -12,32 +46,26 @@ function initializeRouteSelectors() {
     
     // Add individual route radio buttons
     optimizationResults.forEach((route, index) => {
-        const color = ROUTE_COLORS[index % ROUTE_COLORS.length];
         const routeId = `route-${index}`;
         
-        const routeItem = document.createElement('label');
-        routeItem.className = 'route-selector-item';
+        const routeContainer = document.createElement('div');
+        routeContainer.className = 'route-selector-item';
         
-        const efficiency = ((route.totalStudents / 55) * 100).toFixed(1);
-        const distance = route.actualDistance ? `${route.actualDistance.toFixed(1)} km` : '';
-        const timeInfo = route.estimatedTime ? `~${route.estimatedTime} min` : '';
+        // Add radio button
+        const radioInput = document.createElement('input');
+        radioInput.type = 'radio';
+        radioInput.name = 'routeSelection';
+        radioInput.id = routeId;
+        radioInput.onchange = () => selectRoute(routeId, index);
         
-        routeItem.innerHTML = `
-            <input type="radio" name="routeSelection" id="${routeId}" onchange="selectRoute('${routeId}', ${index})">
-            <div style="flex: 1;">
-                <span style="color: ${color}; font-weight: 600;">${route.busId}</span>
-                <div style="margin-top: 4px; font-size: 12px; color: #718096;">
-                    <span>${route.totalStudents} students</span>
-                    <span style="margin: 0 8px;">•</span>
-                    <span>${route.stops.length} stops</span>
-                    ${distance ? `<span style="margin: 0 8px;">•</span><span>${distance}</span>` : ''}
-                    ${timeInfo ? `<span style="margin: 0 8px;">•</span><span>${timeInfo}</span>` : ''}
-                    <div style="margin-top: 2px;">Efficiency: ${efficiency}%</div>
-                </div>
-            </div>
-        `;
+        // Create route display element
+        const routeDisplay = displayRouteWithAccessibilityInfo(route);
         
-        individualSelectors.appendChild(routeItem);
+        // Add to container
+        routeContainer.appendChild(radioInput);
+        routeContainer.appendChild(routeDisplay);
+        
+        individualSelectors.appendChild(routeContainer);
     });
 
     // Select "Show All" by default

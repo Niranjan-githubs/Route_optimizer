@@ -91,6 +91,89 @@ app.post('/api/optimize', async (req, res) => {
     }
 });
 
+app.post('/api/validate-route', async (req, res) => {
+    try {
+        const { origin, destination, waypoints, travelMode, transitOptions, avoidTolls, avoidHighways, avoidFerries } = req.body;
+        
+        const directionsRequest = {
+            origin: origin,
+            destination: destination,
+            waypoints: waypoints,
+            mode: travelMode,
+            alternatives: true,
+            avoid: [
+                ...(avoidTolls ? ['tolls'] : []),
+                ...(avoidHighways ? ['highways'] : []),
+                ...(avoidFerries ? ['ferries'] : [])
+            ],
+            // ✅ KEY: Add restrictions for large vehicles (buses)
+            restrictions: {
+                vehicleType: 'BUS',
+                avoidRestrictedRoads: true,
+                avoidLowBridges: true
+            }
+        };
+        
+        // If using transit mode, add transit options
+        if (travelMode === 'TRANSIT' && transitOptions) {
+            directionsRequest.transitOptions = transitOptions;
+        }
+        
+        // Call Google Directions API
+        const response = await googleDirections.directions(directionsRequest);
+        res.json(response.data);
+        
+    } catch (error) {
+        console.error('Route validation error:', error);
+        res.status(500).json({ error: 'Route validation failed', details: error.message });
+    }
+});
+
+
+app.post('/api/directions', async (req, res) => {
+    try {
+        const { origin, destination, waypoints, optimizeWaypoints, travelMode, avoidTolls, avoidHighways, avoidFerries } = req.body;
+        
+        // Build waypoints string
+        let waypointsStr = '';
+        if (waypoints && waypoints.length > 0) {
+            const waypointCoords = waypoints.map(wp => `${wp.location.lat},${wp.location.lng}`);
+            waypointsStr = waypointCoords.join('|');
+            if (optimizeWaypoints) {
+                waypointsStr = `optimize:true|${waypointsStr}`;
+            }
+        }
+        
+        // Build avoid parameter
+        const avoidParams = [];
+        if (avoidTolls) avoidParams.push('tolls');
+        if (avoidHighways) avoidParams.push('highways');  
+        if (avoidFerries) avoidParams.push('ferries');
+        
+        // Construct URL
+        const params = new URLSearchParams({
+            origin: `${origin.lat},${origin.lng}`,
+            destination: `${destination.lat},${destination.lng}`,
+            mode: travelMode || 'driving',
+            key: process.env.GOOGLE_API_KEY
+        });
+        
+        if (waypointsStr) params.append('waypoints', waypointsStr);
+        if (avoidParams.length > 0) params.append('avoid', avoidParams.join('|'));
+        
+        const url = `https://maps.googleapis.com/maps/api/directions/json?${params.toString()}`;
+        
+        const response = await fetch(url);
+        const result = await response.json();
+        
+        res.json(result);
+        
+    } catch (error) {
+        console.error('Directions API error:', error);
+        res.status(500).json({ error: 'Directions failed', details: error.message });
+    }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
     res.json({ 

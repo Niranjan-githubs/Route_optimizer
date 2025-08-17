@@ -236,11 +236,10 @@ body {
 }
 
 .route-item {
-    background: #f7fafc;
-    padding: 12px;
-    margin-bottom: 8px;
-    border-radius: 8px;
-    border-left: 4px solid #667eea;
+    padding: 10px;
+    margin: 5px 0;
+    border-radius: 4px;
+    background: #f8f9fa;
 }
 
 .route-item h5 {
@@ -309,9 +308,31 @@ body {
 
 .individual-routes {
     margin-top: 10px;
-    max-height: 200px;
+    max-height: 400px;  /* Increased height */
     overflow-y: auto;
     padding: 5px;
+    border: 1px solid #e2e8f0;  /* Add border to make scrollable area visible */
+    border-radius: 6px;
+    background: #ffffff;  /* White background */
+}
+
+/* Add styling for the scrollbar */
+.individual-routes::-webkit-scrollbar {
+    width: 8px;
+}
+
+.individual-routes::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+.individual-routes::-webkit-scrollbar-thumb {
+    background: #cbd5e0;
+    border-radius: 4px;
+}
+
+.individual-routes::-webkit-scrollbar-thumb:hover {
+    background: #a0aec0;
 }
 
 .route-selector-item span {
@@ -335,4 +356,51 @@ body {
     .main-content {
         grid-template-columns: 1fr;
     }
+}
+
+.accessibility-warning {
+    border-left: 4px solid #f59e0b;
+    background: #fff7ed;
+}
+
+.accessibility-ok {
+    color: #059669;
+}
+
+.accessibility-warning {
+    color: #d97706;
+}
+
+.warning-details {
+    font-size: 12px;
+    color: #b45309;
+    margin-top: 4px;
+    padding: 4px 8px;
+    background: #ffedd5;
+    border-radius: 4px;
+}
+
+.route-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.route-stats {
+    font-size: 14px;
+    color: #4b5563;
+    margin-bottom: 8px;
+}
+
+.route-stops {
+    font-size: 12px;
+    color: #6b7280;
+}
+
+.stop {
+    background: #e5e7eb;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin: 0 2px;
 }
