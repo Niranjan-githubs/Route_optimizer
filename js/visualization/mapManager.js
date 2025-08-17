@@ -1,20 +1,33 @@
 // Map initialization and management
+window.map = null;
 
-// Initialize map
 function initMap() {
-    if (map) return;
+    if (window.map) return;
     
-    map = L.map('map').setView(COLLEGE_COORDS, 10);
+    // Make sure the map container exists
+    const mapContainer = document.getElementById('map');
+    if (!mapContainer) {
+        console.error('Map container not found!');
+        return;
+    }
+    
+    // Initialize the map
+    window.map = L.map('map').setView(COLLEGE_COORDS, 11);
+    
+    // Add the tile layer
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors'
-    }).addTo(map);
+    }).addTo(window.map);
     
     // Add college marker
     L.marker(COLLEGE_COORDS, {
+        title: 'college',
         icon: L.divIcon({
-            html: '<i class="fas fa-university" style="color: #2d3748; font-size: 20px;"></i>',
-            iconSize: [30, 30],
-            className: 'college-icon'
+            className: 'college-icon',
+            html: '🏫',
+            iconSize: [30, 30]
         })
-    }).addTo(map).bindPopup('<b>Rajalakshmi Engineering College</b><br>Starting Point');
+    }).addTo(window.map);
+    
+    console.log('Map initialized successfully');
 }

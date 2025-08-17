@@ -36,42 +36,162 @@ function displayRouteWithAccessibilityInfo(route) {
 
 // Initialize route selectors
 function initializeRouteSelectors() {
+    console.log('Initializing route selectors with:', window.optimizationResults);
     const routeSelectorSection = document.getElementById('routeSelectorSection');
     const individualSelectors = document.getElementById('individualRouteSelectors');
     individualSelectors.innerHTML = '';
     selectedRoute = null;
-    
+
+    // Check if we have valid optimization results
+    if (!window.optimizationResults || !window.optimizationResults.length) {
+        console.warn('No optimization results available');
+        return;
+    }
+
     // Show the route selector section
     routeSelectorSection.style.display = 'block';
-    
-    // Add individual route radio buttons
-    optimizationResults.forEach((route, index) => {
-        const routeId = `route-${index}`;
+
+    // Add toggle all checkbox
+    const toggleAllDiv = document.createElement('div');
+    toggleAllDiv.className = 'toggle-all-routes';
+    toggleAllDiv.innerHTML = `
+        <label>
+            <input type="checkbox" id="toggleAllRoutes" checked>
+            Show All Routes
+        </label>
+    `;
+    individualSelectors.appendChild(toggleAllDiv);
+
+    // Create route toggles for each valid route
+    window.optimizationResults.forEach((route, index) => {
+        if (!route || !route.stops || route.stops.length === 0) {
+            console.warn(`Skipping invalid route at index ${index}`);
+            return;
+        }
+
+        const routeDiv = document.createElement('div');
+        routeDiv.className = 'route-toggle';
         
-        const routeContainer = document.createElement('div');
-        routeContainer.className = 'route-selector-item';
+        // Show key route information
+        const efficiency = route.efficiency || '0%';
+        const studentCount = route.totalStudents || 0;
+        const distance = route.totalDistance || '0 km';
         
-        // Add radio button
-        const radioInput = document.createElement('input');
-        radioInput.type = 'radio';
-        radioInput.name = 'routeSelection';
-        radioInput.id = routeId;
-        radioInput.onchange = () => selectRoute(routeId, index);
+        routeDiv.innerHTML = `
+            <label>
+                <input type="checkbox" class="route-checkbox" data-route-index="${index}" checked>
+                <span class="route-info">
+                    <strong>${route.busId || `Bus ${index + 1}`}</strong>
+                    <span class="route-details">
+                        ${studentCount} students | ${distance} | ${efficiency} efficient
+                    </span>
+                </span>
+            </label>
+        `;
         
-        // Create route display element
-        const routeDisplay = displayRouteWithAccessibilityInfo(route);
+        // Add click handler for route selection
+        routeDiv.addEventListener('click', (e) => {
+            if (e.target.type !== 'checkbox') {
+                const checkbox = routeDiv.querySelector('.route-checkbox');
+                checkbox.checked = !checkbox.checked;
+                updateRouteVisibility();
+            }
+        });
         
-        // Add to container
-        routeContainer.appendChild(radioInput);
-        routeContainer.appendChild(routeDisplay);
-        
-        individualSelectors.appendChild(routeContainer);
+        individualSelectors.appendChild(routeDiv);
     });
 
-    // Select "Show All" by default
-    document.getElementById('selectAllRoutes').checked = true;
-    document.querySelector('.route-selector-item').classList.add('selected');
-    toggleAllRoutes();
+    // Add event listeners
+    document.getElementById('toggleAllRoutes').addEventListener('change', toggleAllRoutes);
+    document.querySelectorAll('.route-checkbox').forEach(checkbox => {
+        checkbox.addEventListener('change', updateRouteVisibility);
+    });
+
+    // Initial visibility update
+    updateRouteVisibility();
+}
+
+function updateRouteDisplay() {
+    const routeList = document.getElementById('routeList');
+    const routeType = document.getElementById('routeTypeFilter').value;
+    const direction = document.getElementById('directionFilter').value;
+    const efficiency = document.getElementById('efficiencyFilter').value;
+    
+    routeList.innerHTML = '';
+    
+    window.optimizationResults.forEach((route, index) => {
+        // Apply filters
+        if (!shouldShowRoute(route, routeType, direction, efficiency)) {
+            return;
+        }
+        
+        const routeElement = createRouteElement(route, index);
+        routeList.appendChild(routeElement);
+    });
+}
+
+function shouldShowRoute(route, typeFilter, directionFilter, efficiencyFilter) {
+    // Route type filter
+    if (typeFilter !== 'all' && route.routeType !== typeFilter) {
+        return false;
+    }
+    
+    // Direction filter
+    if (directionFilter !== 'all' && route.direction !== directionFilter) {
+        return false;
+    }
+    
+    // Efficiency filter
+    const efficiency = parseFloat(route.efficiency.replace('%', ''));
+    if (efficiencyFilter !== 'all') {
+        if (efficiencyFilter === 'high' && efficiency <= 80) return false;
+        if (efficiencyFilter === 'medium' && (efficiency < 50 || efficiency > 80)) return false;
+        if (efficiencyFilter === 'low' && efficiency >= 50) return false;
+    }
+    
+    return true;
+}
+
+function createRouteElement(route, index) {
+    const routeElement = document.createElement('div');
+    routeElement.className = 'route-item';
+    routeElement.dataset.routeIndex = index;
+    
+    const routeTypeClass = route.routeType === 'optimized' ? 'optimized' : 
+                          route.routeType === 'salvaged' ? 'salvaged' : 'basic';
+    
+    routeElement.innerHTML = `
+        <div class="route-header ${routeTypeClass}">
+            <strong>${route.busId}</strong>
+            <span class="route-type">${route.routeType}</span>
+            <span class="route-direction">${route.direction}</span>
+        </div>
+        <div class="route-stats">
+            <span>Students: ${route.totalStudents}</span>
+            <span>Distance: ${route.totalDistance}</span>
+            <span>Efficiency: ${route.efficiency}</span>
+        </div>
+        <div class="route-stops">
+            <strong>Stops:</strong> ${route.stops.map((stop, i) => 
+                `<span class="stop" title="Stop ${i+1}: ${stop.num_students} students">
+                    ${stop.cluster_number || i+1}
+                </span>`).join(' → ')}
+        </div>
+    `;
+    
+    // Add click handler to show route on map
+    routeElement.addEventListener('click', () => {
+        // Remove previous selection
+        document.querySelectorAll('.route-item.selected').forEach(el => 
+            el.classList.remove('selected'));
+        routeElement.classList.add('selected');
+        
+        // Update map
+        window.selectedRoute = route;
+        updateRouteVisibility();
+    });
+    
+    return routeElement;
 }
 
 // Toggle all routes
@@ -102,7 +222,7 @@ function selectRoute(routeId, index) {
 // Update route visibility on map
 function updateRouteVisibility() {
     // First, show/hide the route lines and their associated markers
-    map.eachLayer((layer) => {
+    window.map.eachLayer((layer) => {
         if (layer instanceof L.Polyline || (layer instanceof L.Marker && layer.options.className?.includes('route-'))) {
             const routeClass = Array.from(layer.options.className?.split(' ') || [])
                 .find(cls => cls.startsWith('route-'));

@@ -97,3 +97,4 @@ function displayResults() {
     
     document.getElementById('resultsPanel').style.display = 'block';
 }
+

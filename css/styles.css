@@ -66,9 +66,11 @@ body {
 }
 
 #map {
+    width: 100%;
     height: 600px;
-    border-radius: 10px;
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+    margin: 20px 0;
+    border: 1px solid #ccc;
+    border-radius: 4px;
 }
 
 .section {
@@ -403,4 +405,119 @@ body {
     padding: 2px 6px;
     border-radius: 4px;
     margin: 0 2px;
+}
+
+.route-filters {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding: 1rem;
+    background: #f8f9fa;
+    border-radius: 6px;
+}
+
+.filter-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.filter-group label {
+    font-weight: 500;
+    color: #4a5568;
+}
+
+.filter-group select {
+    padding: 0.5rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+    background: white;
+}
+
+.route-list {
+    max-height: 600px;
+    overflow-y: auto;
+    padding: 0.5rem;
+}
+
+.route-item {
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    margin-bottom: 0.5rem;
+    padding: 1rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.route-item:hover {
+    background: #f8f9fa;
+}
+
+.route-item.selected {
+    border-color: #4299e1;
+    background: #ebf8ff;
+}
+
+.route-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.route-type {
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+}
+
+.route-header.optimized .route-type {
+    background: #c6f6d5;
+    color: #2f855a;
+}
+
+.route-header.salvaged .route-type {
+    background: #feebc8;
+    color: #9c4221;
+}
+
+.route-header.basic .route-type {
+    background: #fed7d7;
+    color: #c53030;
+}
+
+.route-stats {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.9rem;
+    color: #4a5568;
+    margin-bottom: 0.5rem;
+}
+
+.route-stops {
+    font-size: 0.9rem;
+    line-height: 1.4;
+}
+
+.stop {
+    display: inline-block;
+    padding: 0.2rem 0.4rem;
+    background: #edf2f7;
+    border-radius: 4px;
+    margin: 0 0.2rem;
+}
+
+.custom-stop-icon {
+    text-align: center;
+}
+
+.custom-stop-icon div {
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    line-height: 24px;
+    color: white;
+    font-weight: bold;
+    font-size: 12px;
+    box-shadow: 0 0 3px rgba(0,0,0,0.3);
 }

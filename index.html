@@ -87,17 +87,40 @@
                     </button>
                 </div>
 
-                <div class="section" id="routeSelectorSection" style="display: none;">
-                    <h3><i class="fas fa-filter"></i> Route Selector</h3>
-                    <div class="route-selector-controls">
-                        <label class="route-selector-item">
-                            <input type="radio" name="routeSelection" id="selectAllRoutes" checked onchange="toggleAllRoutes()">
-                            <span>Show All Routes</span>
-                        </label>
-                        <div id="individualRouteSelectors" class="individual-routes">
-                            <!-- Individual route radio buttons will be added here dynamically -->
+                <div id="routeSelectorSection" class="section">
+                    <h3>Route Selection</h3>
+                    <div class="filter-controls">
+                        <div class="filter-group">
+                            <label for="routeTypeFilter">Route Type:</label>
+                            <select id="routeTypeFilter">
+                                <option value="all">All Routes</option>
+                                <option value="optimized">Optimized</option>
+                                <option value="salvaged">Salvaged</option>
+                                <option value="basic">Basic</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label for="directionFilter">Direction:</label>
+                            <select id="directionFilter">
+                                <option value="all">All Directions</option>
+                                <option value="northeast">Northeast</option>
+                                <option value="east">East</option>
+                                <option value="southeast">Southeast</option>
+                                <option value="northwest">Northwest</option>
+                                <option value="MIXED">Mixed</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label for="efficiencyFilter">Efficiency:</label>
+                            <select id="efficiencyFilter">
+                                <option value="all">All</option>
+                                <option value="high">High (>80%)</option>
+                                <option value="medium">Medium (50-80%)</option>
+                                <option value="low">Low (<50%)</option>
+                            </select>
                         </div>
                     </div>
+                    <div id="individualRouteSelectors"></div>
                 </div>
                 
                 <div id="status" class="status"></div>

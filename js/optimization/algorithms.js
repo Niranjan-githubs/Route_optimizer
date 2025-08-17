@@ -69,23 +69,46 @@ async function optimizeRoutes() {
         showStatus('Optimizing routes... This may take a moment.', 'info');
         document.getElementById('optimizeBtn').innerHTML = '<div class="loading"></div> Optimizing...';
         document.getElementById('optimizeBtn').disabled = true;
+
+        // Initialize map
+        initMap();
+        
         
         // For demo purposes, using simulation. Replace with actual Google API call:
         const requestData = prepareOptimizationRequest();
         //const results = await callGoogleRouteOptimization(requestData);
         
-        optimizationResults = await optimizeWithGoogleAPI();
+        const results = await optimizeWithGoogleAPI();
+        console.log('Results received in algorithms.js:', results);
+
+        // Set global variable
+        window.optimizationResults = results;
+        console.log('Setting window.optimizationResults:', window.optimizationResults);
         
-        if (!optimizationResults || optimizationResults.length === 0) {
+        // Check global variable properly
+        if (!window.optimizationResults || window.optimizationResults.length === 0) {
             throw new Error('No optimization results generated');
         }
         
+        // Ensure routes have all required fields for display
+        window.optimizationResults = window.optimizationResults.map((route, index) => ({
+            ...route,
+            busId: route.busId || `Bus ${index+1}`,
+            depot: route.depot || (route.assignedDepot ? route.assignedDepot['Parking Name'] : 'Default Depot'),
+            stops: route.stops || [],
+            totalStudents: route.totalStudents || 0,
+            efficiency: route.efficiency || '0%',
+            totalDistance: route.totalDistance || '0 km',
+            routeType: route.routeType || 'optimized',
+            direction: route.direction || 'MIXED'
+        }));
+        
+        initializeRouteSelectors();
         visualizeOptimizedRoutes();
         displayResults();
-        initializeRouteSelectors();
         
         document.getElementById('exportBtn').disabled = false;
-        showStatus(`Route optimization completed! Generated ${optimizationResults.length} efficient routes.`, 'success');
+        showStatus(`Route optimization completed! Generated ${window.optimizationResults.length} efficient routes.`, 'success');
         
     } catch (error) {
         showStatus(`Optimization failed: ${error.message}`, 'error');
