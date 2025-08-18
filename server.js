@@ -1,4 +1,5 @@
 // server.js - FIXED VERSION
+require('dotenv').config(); // Load environment variables from .env file
 const express = require('express');
 const { GoogleAuth } = require('google-auth-library');
 const cors = require('cors');
@@ -132,7 +133,14 @@ app.post('/api/validate-route', async (req, res) => {
 
 app.post('/api/directions', async (req, res) => {
     try {
+        console.log('📡 Received directions request:', JSON.stringify(req.body, null, 2));
+        
         const { origin, destination, waypoints, optimizeWaypoints, travelMode, avoidTolls, avoidHighways, avoidFerries } = req.body;
+        
+        // Validate required parameters
+        if (!origin || !destination) {
+            return res.status(400).json({ error: 'Origin and destination are required' });
+        }
         
         // Build waypoints string
         let waypointsStr = '';
@@ -150,26 +158,39 @@ app.post('/api/directions', async (req, res) => {
         if (avoidHighways) avoidParams.push('highways');  
         if (avoidFerries) avoidParams.push('ferries');
         
+        // Check if API key is available
+        const apiKey = process.env.GOOGLE_API_KEY;
+        if (!apiKey) {
+            console.error('❌ No Google API key found in environment variables');
+            return res.status(500).json({ error: 'Google API key not configured' });
+        }
+        
         // Construct URL
         const params = new URLSearchParams({
             origin: `${origin.lat},${origin.lng}`,
             destination: `${destination.lat},${destination.lng}`,
             mode: travelMode || 'driving',
-            key: process.env.GOOGLE_API_KEY
+            key: apiKey
         });
         
         if (waypointsStr) params.append('waypoints', waypointsStr);
         if (avoidParams.length > 0) params.append('avoid', avoidParams.join('|'));
         
         const url = `https://maps.googleapis.com/maps/api/directions/json?${params.toString()}`;
+        console.log('🌐 Calling Google Directions API:', url);
         
         const response = await fetch(url);
         const result = await response.json();
         
+        console.log('✅ Google Directions API response status:', result.status);
+        if (result.status !== 'OK') {
+            console.error('❌ Google Directions API error:', result.error_message);
+        }
+        
         res.json(result);
         
     } catch (error) {
-        console.error('Directions API error:', error);
+        console.error('❌ Directions API error:', error);
         res.status(500).json({ error: 'Directions failed', details: error.message });
     }
 });
