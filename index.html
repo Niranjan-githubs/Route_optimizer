@@ -14,6 +14,9 @@
     <!-- PapaParse for CSV -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
     
+    <!-- SheetJS for Excel -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
     <!-- Custom CSS -->
     <link rel="stylesheet" href="css/modern-styles.css">
 </head>
@@ -69,6 +72,12 @@
               </button>
               <button class="map-control-btn" onclick="toggleRouteSelector()" title="Toggle Route Selector" style="background: #10b981; color: white;">
                   <i class="fas fa-route"></i>
+              </button>
+              <button class="map-control-btn" onclick="toggleRulerMode()" title="Ruler Tool (R)" style="background: #8b5cf6; color: white;">
+                  <i class="fas fa-ruler"></i>
+              </button>
+              <button class="map-control-btn" onclick="toggleDraggableMode()" title="Draggable Mode (D)" style="background: #f59e0b; color: white;">
+                  <i class="fas fa-arrows-alt"></i>
               </button>
           </div>
 
@@ -194,6 +203,26 @@
                             <option value="saturday">Saturday</option>
                         </select>
                     </div>
+                    
+                    <div class="config-item">
+                        <label for="roadWidthValidation">
+                            <input type="checkbox" id="roadWidthValidation" checked>
+                            Road Width Validation
+                        </label>
+                        <small style="color: #6b7280; display: block; margin-top: 4px;">
+                            Check for narrow roads unsuitable for buses
+                        </small>
+                    </div>
+                    
+                    <div class="config-item">
+                        <label for="automaticRerouting">
+                            <input type="checkbox" id="automaticRerouting" checked>
+                            Automatic Rerouting
+                        </label>
+                        <small style="color: #6b7280; display: block; margin-top: 4px;">
+                            Automatically reroute when road width validation fails
+                        </small>
+                    </div>
                 </div>
             </div>
 
@@ -210,7 +239,19 @@
                     </button>
                     
                     <button class="btn btn-warning btn-full" onclick="exportResults()" id="exportBtn" disabled>
-                        <i class="fas fa-download"></i> Export Results
+                        <i class="fas fa-download"></i> Export Basic
+                    </button>
+                    
+                    <button class="btn btn-success btn-full" onclick="exportComprehensiveResults()" id="exportComprehensiveBtn" disabled>
+                        <i class="fas fa-file-csv"></i> Export CSV
+                    </button>
+                    
+                    <button class="btn btn-primary btn-full" onclick="exportComprehensiveExcel()" id="exportExcelBtn" disabled>
+                        <i class="fas fa-file-excel"></i> Export Excel
+                    </button>
+                    
+                    <button class="btn btn-warning btn-full" onclick="debugExcelExport()" style="background: #f59e0b; color: white;">
+                        <i class="fas fa-bug"></i> Debug Excel Export
                     </button>
                 </div>
             </div>

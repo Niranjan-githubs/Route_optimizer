@@ -389,33 +389,66 @@ function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
     return distance;
 }
 
-// ✅ MODIFIED: Main optimization function to incorporate new approaches
+// ✅ ENHANCED: Main optimization function with advanced angular slicing algorithm
 async function getBusOptimizedRoutes() {
     try {
         const filteredStops = filterStopsByDistance(stopsData, 40);
         const maxCapacity = parseInt(document.getElementById('maxCapacity').value) || 55;
         
-        console.log(`🚌 Starting enhanced optimization for ${filteredStops.length} stops`);
+        console.log(`🚌 Starting advanced optimization for ${filteredStops.length} stops`);
         
-        // ✅ CREATE ROUTES USING MULTIPLE STRATEGIES for better coverage
-        const strategiesResults = {
-            corridor: await createCorridorBasedRoutes(filteredStops, maxCapacity),
-            segment: await createRoutesBySegment(filteredStops, maxCapacity),
-            directional: await createGeographicalClusters(filteredStops, maxCapacity)
-        };
+        // ✅ PRIMARY: Use the advanced angular slicing algorithm
+        console.log(`🎯 Using advanced angular slicing algorithm (${ANGLE_SLICE_DEG}° sectors)`);
+        const advancedRoutes = buildOptimizedRoutes(filteredStops, depotsData, maxCapacity);
         
-        // Validate route lengths across all strategies
-        Object.keys(strategiesResults).forEach(strategy => {
-            strategiesResults[strategy] = strategiesResults[strategy].filter(validateRouteLength);
-            console.log(`✅ ${strategy}: ${strategiesResults[strategy].length} valid routes`);
-        });
+        // Convert to your existing format
+        const formattedAdvancedRoutes = convertAdvancedRoutesToFormat(advancedRoutes, 0);
         
-        // Collect all valid routes
-        let allRoutes = [
-            ...strategiesResults.corridor,
-            ...strategiesResults.segment,
-            ...strategiesResults.directional
-        ];
+        // ✅ FALLBACK: Use existing strategies if advanced algorithm doesn't produce enough routes
+        let allRoutes = [...formattedAdvancedRoutes];
+        
+        // Check if we need more routes
+        const totalStudents = filteredStops.reduce((sum, stop) => sum + parseInt(stop.num_students), 0);
+        const maxBusesNeeded = Math.ceil(totalStudents / maxCapacity);
+        
+        if (allRoutes.length < maxBusesNeeded) {
+            console.log(`🔄 Advanced algorithm produced ${allRoutes.length} routes, need ${maxBusesNeeded}. Adding fallback routes...`);
+            
+            // Get unserved stops from advanced routes
+            const servedStopIds = new Set();
+            allRoutes.forEach(route => {
+                route.stops.forEach(stop => {
+                    servedStopIds.add(stop.cluster_number);
+                });
+            });
+            
+            const unservedStops = filteredStops.filter(stop => !servedStopIds.has(stop.cluster_number));
+            
+            if (unservedStops.length > 0) {
+                console.log(`📊 ${unservedStops.length} stops not served by advanced algorithm, creating fallback routes...`);
+                
+                // Use existing strategies for remaining stops
+                const fallbackStrategies = {
+                    corridor: await createCorridorBasedRoutes(unservedStops, maxCapacity),
+                    segment: await createRoutesBySegment(unservedStops, maxCapacity),
+                    directional: await createGeographicalClusters(unservedStops, maxCapacity)
+                };
+                
+                // Validate and add fallback routes
+                Object.keys(fallbackStrategies).forEach(strategy => {
+                    fallbackStrategies[strategy] = fallbackStrategies[strategy].filter(validateRouteLength);
+                    console.log(`✅ ${strategy} fallback: ${fallbackStrategies[strategy].length} routes`);
+                });
+                
+                const fallbackRoutes = [
+                    ...fallbackStrategies.corridor,
+                    ...fallbackStrategies.segment,
+                    ...fallbackStrategies.directional
+                ];
+                
+                allRoutes = [...allRoutes, ...fallbackRoutes];
+            }
+        }
         
         // ✅ ANALYZE COVERAGE
         const {
@@ -426,7 +459,6 @@ async function getBusOptimizedRoutes() {
             unservedStops
         } = analyzeRouteCoverage(allRoutes, filteredStops);
         
-        const totalStudents = filteredStops.reduce((sum, stop) => sum + parseInt(stop.num_students), 0);
         const coveragePercent = (servedStudents / totalStudents * 100).toFixed(1);
         
         console.log(`📊 COVERAGE ANALYSIS:`);
@@ -434,17 +466,15 @@ async function getBusOptimizedRoutes() {
         console.log(`   - Stops served: ${servedStops.length}/${filteredStops.length}`);
         console.log(`   - Duplicate stops: ${duplicateStops}`);
         console.log(`   - Unserved stops: ${unservedStops.length}`);
+        console.log(`   - Advanced routes: ${formattedAdvancedRoutes.length}`);
         
         // ✅ SALVAGE OPERATION: Create routes for unserved stops if coverage is low
         if (parseFloat(coveragePercent) < 85 && unservedStops.length > 0) {
-            console.log(`🔄 Coverage below 85% - attempting to create routes for unserved stops...`);
+            console.log(`🔄 Coverage below 85% - attempting to create salvage routes for unserved stops...`);
             
-            // Try to create routes for unserved stops
             const salvageRoutes = await createSalvageRoutes(unservedStops, maxCapacity);
-            
-            // Add valid salvage routes
             const validSalvageRoutes = salvageRoutes.filter(validateRouteLength);
-            console.log(`✅ Created ${validSalvageRoutes.length} additional routes for previously unserved stops`);
+            console.log(`✅ Created ${validSalvageRoutes.length} salvage routes for unserved stops`);
             
             allRoutes = [...servingRoutes, ...validSalvageRoutes];
             
@@ -454,7 +484,6 @@ async function getBusOptimizedRoutes() {
             
             console.log(`📊 FINAL COVERAGE: ${finalCoveragePercent}% of students`);
         } else {
-            // No need for salvage, just use the serving routes (no duplicates)
             allRoutes = servingRoutes;
         }
         
@@ -465,12 +494,15 @@ async function getBusOptimizedRoutes() {
             }
         });
         
-        // ✅ Limit to maximum number of buses available
-        const totalStudentsInShift = filteredStops.reduce((sum, stop) => sum + parseInt(stop.num_students || 0), 0);
-        const maxBusesNeeded = Math.ceil(totalStudentsInShift / maxCapacity);
+        // ✅ Limit to maximum number of buses available (maxBusesNeeded already calculated above)
         
-        // Sort routes by efficiency
+        // Sort routes by efficiency (advanced routes get priority)
         allRoutes.sort((a, b) => {
+            // Advanced routes get priority
+            if (a.isAdvancedOptimized && !b.isAdvancedOptimized) return -1;
+            if (!a.isAdvancedOptimized && b.isAdvancedOptimized) return 1;
+            
+            // Then sort by efficiency
             const effA = parseFloat(a.efficiency?.replace('%', '')) || 0;
             const effB = parseFloat(b.efficiency?.replace('%', '')) || 0;
             return effB - effA; // Highest efficiency first
@@ -479,11 +511,12 @@ async function getBusOptimizedRoutes() {
         // Take the most efficient routes up to the limit
         const finalRoutes = allRoutes.slice(0, maxBusesNeeded);
         
-        console.log(`🎯 Final solution: ${finalRoutes.length} routes`);
+        console.log(`🎯 Final solution: ${finalRoutes.length} routes (${formattedAdvancedRoutes.filter(r => finalRoutes.includes(r)).length} advanced)`);
         return finalRoutes;
         
     } catch (error) {
-        console.error('Enhanced route optimization failed:', error);
+        console.error('Advanced route optimization failed:', error);
+        console.log('🔄 Falling back to existing optimization strategies...');
         return await simulateOptimization(); // Fallback to simulation
     }
 }
@@ -2349,4 +2382,259 @@ function checkServerStatus() {
             console.error('❌ Server is not running:', error);
             console.log('💡 Make sure your Node.js server is running on port 3000');
         });
+}
+
+// ✅ ADVANCED ROUTE OPTIMIZATION: Angular Slicing with Inward-Flowing Routes
+// This algorithm creates much better routes by using angular sectors and ensuring routes flow inward toward college
+
+// --- Geometry helpers ---
+function toRad(d) { return d * Math.PI / 180; }
+
+function haversine(a, b) {
+    const R = 6371000, dLat = toRad(b.lat - a.lat), dLon = toRad(b.lng - a.lng);
+    const s1 = Math.sin(dLat / 2), s2 = Math.sin(dLon / 2);
+    const q = s1 * s1 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * s2 * s2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(q)));
+}
+
+function bearing(a, b) {
+    const φ1 = toRad(a.lat), φ2 = toRad(b.lat), dλ = toRad(b.lng - a.lng);
+    const y = Math.sin(dλ) * Math.cos(φ2);
+    const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(dλ);
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function turnDelta(deg1, deg2) {
+    let d = Math.abs(deg1 - deg2);
+    return d > 180 ? 360 - d : d;
+}
+
+// --- Parameters you can tune ---
+const DEST = { lat: COLLEGE_COORDS[0], lng: COLLEGE_COORDS[1] }; // college
+const ANGLE_SLICE_DEG = 12;      // 10–15° works well
+const ROAD_FACTOR = 1.25;        // road detour factor vs straight-line
+const MONOTONE_DELTA_M = 300;    // each hop should move ≥300 m closer to DEST
+const MAX_TURN_DEG = 70;         // keep heading generally toward DEST
+const MAX_ROUTE_M = 40000;       // soft prefer, hard cap elsewhere 50km
+const HARD_MAX_ROUTE_M = 50000;
+
+// --- Preprocess: assign angle+radius per stop from DEST ---
+function decorateStopsWithPolar(stops) {
+    return stops.map(s => {
+        const stopCoord = { lat: parseFloat(s.snapped_lat), lng: parseFloat(s.snapped_lon) };
+        const r = haversine(DEST, stopCoord);
+        const θ = bearing(DEST, stopCoord);
+        return { 
+            ...s, 
+            r, 
+            theta: θ,
+            lat: stopCoord.lat,
+            lng: stopCoord.lng,
+            students: parseInt(s.num_students) || 1
+        };
+    });
+}
+
+// --- Bucket by angular slices ---
+function bucketByAngle(stops) {
+    const buckets = new Map();
+    for (const s of stops) {
+        const key = Math.floor(s.theta / ANGLE_SLICE_DEG);
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(s);
+    }
+    // sort each bucket by radius descending (farther first)
+    for (const [, arr] of buckets) arr.sort((a, b) => b.r - a.r);
+    return buckets;
+}
+
+// --- Route builder for a bucket (with borrow from neighbors when needed) ---
+function buildRoutesFromBucket(buckets, key, maxCapacity, depot) {
+    const my = buckets.get(key) || [];
+    const left = buckets.get(key - 1) || [];
+    const right = buckets.get(key + 1) || [];
+
+    const pool = [...my]; // we'll borrow from neighbors only if needed
+
+    const routes = [];
+    while (pool.length) {
+        let route = [];
+        let load = 0;
+        let dist = 0;
+
+        // start at farthest remaining
+        route.push(pool.shift());
+
+        while (true) {
+            const cur = route[route.length - 1];
+
+            // candidate list: prefer same bucket first
+            const candidates = pool.length ? pool : (left.length ? left : right);
+
+            let best = null, bestGain = Infinity;
+            for (let i = 0; i < candidates.length; i++) {
+                const cand = candidates[i];
+                // capacity early
+                if ((load + (cand.students || 1)) > maxCapacity) continue;
+
+                // monotone progress toward DEST
+                if (cand.r > cur.r - MONOTONE_DELTA_M) continue;
+
+                // heading constraint: prefer moves that keep overall bearing toward DEST
+                const curHead = bearing(cur, DEST);
+                const moveHead = bearing(cur, cand);
+                if (turnDelta(curHead, moveHead) > MAX_TURN_DEG) continue;
+
+                // projected length
+                const leg = haversine(cur, cand) * ROAD_FACTOR;
+                if ((dist + leg) > MAX_ROUTE_M) continue;
+
+                if (leg < bestGain) {
+                    bestGain = leg;
+                    best = { idx: i, arr: candidates, stop: cand, leg };
+                }
+            }
+
+            if (!best) break; // no feasible next hop
+
+            route.push(best.stop);
+            dist += best.leg;
+            load += (best.stop.students || 1);
+            best.arr.splice(best.idx, 1); // remove from its source array
+        }
+
+        // close route to DEST (college)
+        const tail = route[route.length - 1];
+        dist += haversine(tail, DEST) * ROAD_FACTOR;
+
+        // hard cap check; if broken, split tail off to new route
+        if (dist > HARD_MAX_ROUTE_M && route.length > 1) {
+            const last = route.pop();
+            // return last to its home bucket
+            const homeKey = Math.floor(last.theta / ANGLE_SLICE_DEG);
+            (buckets.get(homeKey) || my).push(last);
+            // recompute dist w/o last
+            const tail2 = route[route.length - 1];
+            dist = 0;
+            for (let i = 0; i < route.length - 1; i++) {
+                dist += haversine(route[i], route[i + 1]) * ROAD_FACTOR;
+            }
+            dist += haversine(tail2, DEST) * ROAD_FACTOR;
+        }
+
+        routes.push({ stops: route, load, dist, depot });
+    }
+    return routes;
+}
+
+// --- 2-opt improvement on stop order (keeps DEST as sink) ---
+function twoOptImprove(routeStops) {
+    // routeStops are from farthest->nearest already; still, 2-opt can clean kinks
+    function tourLength(arr) {
+        let L = 0;
+        for (let i = 0; i < arr.length - 1; i++) L += haversine(arr[i], arr[i + 1]) * ROAD_FACTOR;
+        L += haversine(arr[arr.length - 1], DEST) * ROAD_FACTOR;
+        return L;
+    }
+    let best = routeStops.slice();
+    let bestL = tourLength(best);
+    let improved = true;
+
+    while (improved) {
+        improved = false;
+        for (let i = 0; i < best.length - 2; i++) {
+            for (let k = i + 1; k < best.length - 1; k++) {
+                const candidate = best.slice(0, i + 1)
+                    .concat(best.slice(i + 1, k + 1).reverse())
+                    .concat(best.slice(k + 1));
+                const L = tourLength(candidate);
+                if (L + 5 < bestL) { // small threshold to avoid micro-flips
+                    best = candidate;
+                    bestL = L;
+                    improved = true;
+                }
+            }
+        }
+    }
+    return best;
+}
+
+// --- Main: produce clean, inward-flowing routes ---
+function buildOptimizedRoutes(stops, depots, maxCapacity) {
+    console.log(`🎯 Building advanced optimized routes for ${stops.length} stops`);
+    
+    const S = decorateStopsWithPolar(stops);
+    const buckets = bucketByAngle(S);
+
+    console.log(`📊 Created ${buckets.size} angular sectors (${ANGLE_SLICE_DEG}° each)`);
+
+    const allRoutes = [];
+    for (const [key] of buckets) {
+        // pick best depot for this sector (closest to sector centroid or to farthest stop)
+        const depot = pickDepotForSector(key, buckets, depots);
+        const sectorRoutes = buildRoutesFromBucket(buckets, key, maxCapacity, depot)
+            .map(r => {
+                const cleaned = twoOptImprove(r.stops);
+                // recompute distance
+                let d = 0;
+                for (let i = 0; i < cleaned.length - 1; i++)
+                    d += haversine(cleaned[i], cleaned[i + 1]) * ROAD_FACTOR;
+                d += haversine(cleaned[cleaned.length - 1], DEST) * ROAD_FACTOR;
+                return { ...r, stops: cleaned, dist: d };
+            });
+        allRoutes.push(...sectorRoutes);
+    }
+    
+    console.log(`✅ Generated ${allRoutes.length} advanced optimized routes`);
+    return allRoutes;
+}
+
+function pickDepotForSector(key, buckets, depots) {
+    // simple: choose depot closest to the farthest stop in this sector
+    const arr = buckets.get(key) || [];
+    if (!arr.length) return depots[0];
+    const far = arr[0];
+    let best = depots[0], bd = Infinity;
+    for (const d of depots) {
+        const depotCoord = { lat: parseFloat(d.Latitude), lng: parseFloat(d.Longitude) };
+        const dd = haversine(depotCoord, far);
+        if (dd < bd) { bd = dd; best = d; }
+    }
+    return best;
+}
+
+// ✅ ENHANCED: Convert advanced routes to your existing format
+function convertAdvancedRoutesToFormat(advancedRoutes, routeIndex) {
+    return advancedRoutes.map((route, index) => {
+        // Convert stops back to your format
+        const formattedStops = route.stops.map(stop => ({
+            cluster_number: stop.cluster_number,
+            snapped_lat: stop.lat.toString(),
+            snapped_lon: stop.lng.toString(),
+            num_students: stop.students.toString(),
+            lat: stop.lat,
+            lng: stop.lng,
+            distance: stop.r / 1000 // Convert to km
+        }));
+
+        // Calculate direction from sector
+        const sectorAngle = route.stops.length > 0 ? route.stops[0].theta : 0;
+        const direction = `${Math.round(sectorAngle)}°`;
+
+        return {
+            busId: `Bus ${routeIndex + index + 1} (Advanced)`,
+            depot: route.depot['Parking Name'] || 'Main Depot',
+            stops: formattedStops,
+            totalStudents: route.load,
+            efficiency: `${((route.load / 55) * 100).toFixed(1)}%`,
+            totalDistance: `${(route.dist / 1000).toFixed(1)} km`,
+            estimatedDistance: route.dist / 1000,
+            direction: direction,
+            routeType: 'advanced-angular',
+            assignedDepot: route.depot,
+            minBearing: sectorAngle - 6,
+            maxBearing: sectorAngle + 6,
+            isAdvancedOptimized: true
+        };
+    });
 }

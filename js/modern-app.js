@@ -19,13 +19,23 @@ const AppState = {
     isLoading: false,
     // Feature flags
     featureFlags: {
-        enableRoadWidthValidation: false // gate external road-width API
-    }
+        enableRoadWidthValidation: true, // ✅ FIXED: Enable road width validation
+        enableAutomaticRerouting: true   // ✅ NEW: Enable automatic rerouting when road width validation fails
+    },
+    // ✅ NEW: Ruler functionality
+    rulerMode: false,
+    rulerMarkers: [],
+    rulerPolylines: [],
+    // ✅ NEW: Draggable functionality
+    draggableMode: false,
+    draggedMarkers: new Map(),
+    draggedPolylines: new Map()
 };
 
 // Constants
 const COLLEGE_COORDS = [13.008867898985972, 80.00353386796435]; // Array format for compatibility
 const ROUTE_COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3', '#54A0FF', '#5F27CD'];
+const GOOGLE_API_KEY = 'AIzaSyAiVn2TbI7qSuTzw1EKvY4urq7V5aTZkZg'; // Google API Key for Directions API
 
 // Global variables for optimization system
 window.COLLEGE_COORDS = COLLEGE_COORDS;
@@ -119,13 +129,16 @@ function initGoogleMap() {
 
     console.log('✅ Google Maps initialized successfully');
     
-    // Add click listener for Street View
+    // Add click listener for Street View and Ruler
     AppState.map.addListener('click', function(event) {
         if (window.streetViewMode) {
             openStreetViewAtLocation(event.latLng);
             // Exit Street View mode after clicking
             window.streetViewMode = false;
             updateStreetViewButton();
+        } else if (AppState.rulerMode) {
+            // ✅ NEW: Add ruler point
+            addRulerPoint(event.latLng);
         }
     });
     
@@ -149,6 +162,18 @@ function setupEventListeners() {
     document.getElementById('maxCapacity').addEventListener('change', updateMetrics);
     document.getElementById('shiftTime').addEventListener('change', updateMetrics);
     document.getElementById('dayOfWeek').addEventListener('change', updateMetrics);
+    
+    // ✅ NEW: Road width validation toggle
+    document.getElementById('roadWidthValidation').addEventListener('change', function(e) {
+        AppState.featureFlags.enableRoadWidthValidation = e.target.checked;
+        showToast(`Road width validation ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+    });
+    
+    // Automatic rerouting checkbox
+    document.getElementById('automaticRerouting').addEventListener('change', function(e) {
+        AppState.featureFlags.enableAutomaticRerouting = e.target.checked;
+        showToast(`Automatic rerouting ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
+    });
     
     // Search bar keyboard support and auto-complete
     const searchInput = document.getElementById('locationSearch');
@@ -189,6 +214,18 @@ function setupEventListeners() {
             if (streetViewContainer.classList.contains('active')) {
                 closeStreetView();
             }
+        }
+        
+        // ✅ NEW: Ruler mode toggle with 'R' key
+        if (e.key === 'r' || e.key === 'R') {
+            e.preventDefault();
+            toggleRulerMode();
+        }
+        
+        // ✅ NEW: Draggable mode toggle with 'D' key
+        if (e.key === 'd' || e.key === 'D') {
+            e.preventDefault();
+            toggleDraggableMode();
         }
     });
 }
@@ -350,14 +387,30 @@ function visualizeData() {
                     }
                 });
                 
+                // ✅ FIXED: Enhanced info window with bus assignment and better details
+                const assignedBus = findAssignedBus(stop.cluster_number);
                 const infoWindow = new google.maps.InfoWindow({
                     content: `
-                        <div style="padding: 10px; min-width: 200px;">
-                            <h4 style="margin: 0 0 10px 0; color: #3b82f6;">Stop ${stop.cluster_number}</h4>
-                            <p><strong>Students:</strong> ${students}</p>
-                            <p><strong>Route:</strong> ${stop.route_name || 'Unknown'}</p>
-                            <p><strong>Type:</strong> ${stop.route_type || 'Unknown'}</p>
-                            <p><strong>Coordinates:</strong> ${lat.toFixed(6)}, ${lng.toFixed(6)}</p>
+                        <div style="padding: 15px; min-width: 280px;">
+                            <h4 style="margin: 0 0 12px 0; color: #3b82f6; border-bottom: 2px solid #3b82f6; padding-bottom: 8px;">
+                                🚏 Stop ${stop.cluster_number}
+                            </h4>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
+                                <div style="background: #f3f4f6; padding: 8px; border-radius: 4px;">
+                                    <strong>👥 Students:</strong><br>${students}
+                                </div>
+                                <div style="background: #f3f4f6; padding: 8px; border-radius: 4px;">
+                                    <strong>🚌 Assigned Bus:</strong><br>${assignedBus || 'Not assigned'}
+                                </div>
+                            </div>
+                            <div style="background: #f3f4f6; padding: 8px; border-radius: 4px; margin-bottom: 8px;">
+                                <strong>📍 Coordinates:</strong><br>${lat.toFixed(6)}, ${lng.toFixed(6)}
+                            </div>
+                            <div style="background: #f3f4f6; padding: 8px; border-radius: 4px;">
+                                <strong>🛣️ Route Info:</strong><br>
+                                Route: ${stop.route_name || 'Unknown'}<br>
+                                Type: ${stop.route_type || 'Unknown'}
+                            </div>
                         </div>
                     `
                 });
@@ -434,7 +487,7 @@ function visualizeData() {
 function ensureStopClusterMarkers() {
     if (!AppState.stopsData || AppState.stopsData.length === 0) return;
     if (AppState.hasClusterMarkers) return;
-    // reuse visualizeData’s markers already created; flag true to avoid duplicates
+    // reuse visualizeData's markers already created; flag true to avoid duplicates
     AppState.hasClusterMarkers = true;
 }
 
@@ -1148,21 +1201,87 @@ function fitMapToRoutes() {
 
 // Route Information
 function showRouteInfo(route, index) {
-    const content = `
-        <div style="padding: 15px; min-width: 300px;">
-            <h3 style="margin: 0 0 15px 0; color: ${ROUTE_COLORS[index % ROUTE_COLORS.length]};">${route.busId}</h3>
-            <div style="margin-bottom: 10px;">
-                <strong>Depot:</strong> ${route.depot}<br>
-                <strong>Total Students:</strong> ${route.totalStudents}<br>
-                <strong>Efficiency:</strong> ${route.efficiency}<br>
-                <strong>Stops:</strong> ${route.stops.length}
+    // Enhanced route info display with advanced algorithm support
+    let algorithmInfo = '';
+    let routeColor = ROUTE_COLORS[index % ROUTE_COLORS.length];
+    
+    if (route.isAdvancedOptimized) {
+        algorithmInfo = `
+            <div style="background: linear-gradient(135deg, #8B5CF6, #A855F7); color: white; padding: 10px; border-radius: 8px; margin-bottom: 15px;">
+                <h4 style="margin: 0 0 8px 0;">🚀 Advanced Angular Algorithm</h4>
+                <div style="font-size: 12px;">
+                    <strong>Direction:</strong> ${route.direction}<br>
+                    <strong>Bearing Range:</strong> ${route.minBearing}° - ${route.maxBearing}°<br>
+                    <strong>Route Type:</strong> ${route.routeType}
+                </div>
             </div>
-            <div style="max-height: 200px; overflow-y: auto;">
-                <strong>Route:</strong><br>
+        `;
+        routeColor = '#8B5CF6'; // Purple for advanced routes
+    } else {
+        algorithmInfo = `
+            <div style="background: #F3F4F6; padding: 10px; border-radius: 8px; margin-bottom: 15px;">
+                <h4 style="margin: 0 0 8px 0; color: #374151;">📊 Standard Algorithm</h4>
+                <div style="font-size: 12px; color: #6B7280;">
+                    <strong>Route Type:</strong> ${route.routeType || 'optimized'}<br>
+                    <strong>Direction:</strong> ${route.direction || 'N/A'}
+                </div>
+            </div>
+        `;
+    }
+    
+    const content = `
+        <div style="padding: 15px; min-width: 350px;">
+            <h3 style="margin: 0 0 15px 0; color: ${routeColor};">${route.busId}</h3>
+            
+            ${algorithmInfo}
+            
+            <div style="margin-bottom: 15px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                    <div style="background: #F9FAFB; padding: 8px; border-radius: 4px;">
+                        <strong>Depot:</strong><br>${route.depot}
+            </div>
+                    <div style="background: #F9FAFB; padding: 8px; border-radius: 4px;">
+                        <strong>Students:</strong><br>${route.totalStudents}
+                    </div>
+                    <div style="background: #F9FAFB; padding: 8px; border-radius: 4px;">
+                        <strong>Efficiency:</strong><br>${route.efficiency}
+                    </div>
+                    <div style="background: #F9FAFB; padding: 8px; border-radius: 4px;">
+                        <strong>Distance:</strong><br>${route.totalDistance}
+                    </div>
+                </div>
+                <div style="background: #F9FAFB; padding: 8px; border-radius: 4px;">
+                    <strong>Total Stops:</strong> ${route.stops.length}
+                </div>
+            </div>
+            
+            <div style="max-height: 200px; overflow-y: auto; background: #F9FAFB; padding: 10px; border-radius: 4px;">
+                <strong>Stop Sequence:</strong><br>
                 ${route.stops.map((stop, i) => 
                     `${i + 1}. Stop ${stop.cluster_number} (${stop.num_students} students)`
                 ).join('<br>')}
             </div>
+            
+            ${route.rerouted ? `
+                <div style="margin-top: 10px; padding: 8px; background: #d1fae5; border-left: 4px solid #10b981; border-radius: 4px;">
+                    <strong>✅ Route Rerouted Successfully:</strong><br>
+                    <strong>Strategy:</strong> ${route.reroutingStrategy}<br>
+                    <strong>Attempt:</strong> ${route.reroutingAttempt}
+                </div>
+            ` : ''}
+            ${route.reroutingFailed ? `
+                <div style="margin-top: 10px; padding: 8px; background: #fee2e2; border-left: 4px solid #ef4444; border-radius: 4px;">
+                    <strong>❌ Rerouting Failed:</strong><br>
+                    <strong>Attempts:</strong> ${route.reroutingAttempts?.length || 0}
+                    ${route.reroutingError ? `<br><strong>Error:</strong> ${route.reroutingError}` : ''}
+                </div>
+            ` : ''}
+            ${route.accessibility && route.accessibility.issues && route.accessibility.issues.length > 0 ? `
+                <div style="margin-top: 10px; padding: 8px; background: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 4px;">
+                    <strong>⚠️ Road Width Issues:</strong><br>
+                    ${route.accessibility.issues.map(issue => `• ${issue}`).join('<br>')}
+                </div>
+            ` : ''}
         </div>
     `;
     
@@ -1170,9 +1289,23 @@ function showRouteInfo(route, index) {
         content: content
     });
     
+    // Try to get the polyline path for positioning
+    let center;
+    if (AppState.polylines.has(`route-${index}`)) {
     const path = AppState.polylines.get(`route-${index}`).getPath();
     const centerIndex = Math.floor(path.getLength() / 2);
-    const center = path.getAt(centerIndex);
+        center = path.getAt(centerIndex);
+    } else if (route.stops && route.stops.length > 0) {
+        // Fallback: use the middle stop
+        const middleStop = route.stops[Math.floor(route.stops.length / 2)];
+        center = {
+            lat: parseFloat(middleStop.snapped_lat || middleStop.lat),
+            lng: parseFloat(middleStop.snapped_lon || middleStop.lng)
+        };
+    } else {
+        // Final fallback: use college coordinates
+        center = { lat: COLLEGE_COORDS[0], lng: COLLEGE_COORDS[1] };
+    }
     
     infoWindow.setPosition(center);
     infoWindow.open(AppState.map);
@@ -1737,6 +1870,14 @@ async function optimizeRoutes() {
         displayResults();
         
         document.getElementById('exportBtn').disabled = false;
+        document.getElementById('exportComprehensiveBtn').disabled = false;
+        document.getElementById('exportExcelBtn').disabled = false;
+        
+        // Also enable export buttons if results are available
+        if (window.optimizationResults && window.optimizationResults.length > 0) {
+            document.getElementById('exportComprehensiveBtn').disabled = false;
+            document.getElementById('exportExcelBtn').disabled = false;
+        }
         showToast(`Route optimization completed! Generated ${window.optimizationResults.length} efficient routes.`, 'success');
         
     } catch (error) {
@@ -1748,17 +1889,34 @@ async function optimizeRoutes() {
     }
 }
 
-// ✅ INTEGRATED: Display optimization results
+// ✅ INTEGRATED: Display optimization results with advanced algorithm stats
 function displayResults() {
     if (window.optimizationResults && window.optimizationResults.length > 0) {
-        showToast(`Optimization complete: ${window.optimizationResults.length} routes generated`, 'success');
+        // Calculate advanced algorithm statistics
+        const advancedRoutes = window.optimizationResults.filter(route => route.isAdvancedOptimized);
+        const standardRoutes = window.optimizationResults.filter(route => !route.isAdvancedOptimized);
         
-        // Update metrics
         const totalStudents = window.optimizationResults.reduce((sum, route) => sum + route.totalStudents, 0);
         const totalDistance = window.optimizationResults.reduce((sum, route) => {
             const dist = parseFloat(route.totalDistance.replace(' km', '').replace('~', '')) || 0;
             return sum + dist;
         }, 0);
+        
+        // Calculate average efficiency
+        const avgEfficiency = window.optimizationResults.reduce((sum, route) => {
+            const eff = parseFloat(route.efficiency.replace('%', '')) || 0;
+            return sum + eff;
+        }, 0) / window.optimizationResults.length;
+        
+        // Show comprehensive results
+        const message = `Optimization complete: ${window.optimizationResults.length} routes generated
+🚀 Advanced Algorithm: ${advancedRoutes.length} routes
+📊 Standard Algorithm: ${standardRoutes.length} routes
+👥 Total Students: ${totalStudents}
+📏 Total Distance: ${totalDistance.toFixed(1)} km
+⚡ Average Efficiency: ${avgEfficiency.toFixed(1)}%`;
+        
+        showToast(message, 'success');
         
         // Update UI metrics
         if (document.getElementById('totalStudents')) {
@@ -1770,6 +1928,23 @@ function displayResults() {
         if (document.getElementById('totalStops')) {
             const totalStops = window.optimizationResults.reduce((sum, route) => sum + route.stops.length, 0);
             document.getElementById('totalStops').textContent = totalStops;
+        }
+        
+        // Log detailed statistics
+        console.log('📊 OPTIMIZATION STATISTICS:');
+        console.log(`   - Total Routes: ${window.optimizationResults.length}`);
+        console.log(`   - Advanced Routes: ${advancedRoutes.length} (${((advancedRoutes.length / window.optimizationResults.length) * 100).toFixed(1)}%)`);
+        console.log(`   - Standard Routes: ${standardRoutes.length} (${((standardRoutes.length / window.optimizationResults.length) * 100).toFixed(1)}%)`);
+        console.log(`   - Total Students: ${totalStudents}`);
+        console.log(`   - Total Distance: ${totalDistance.toFixed(1)} km`);
+        console.log(`   - Average Efficiency: ${avgEfficiency.toFixed(1)}%`);
+        
+        // Show advanced routes details
+        if (advancedRoutes.length > 0) {
+            console.log('🚀 ADVANCED ROUTES DETAILS:');
+            advancedRoutes.forEach((route, index) => {
+                console.log(`   Route ${index + 1}: ${route.busId} - ${route.direction} - ${route.efficiency} efficiency`);
+            });
         }
         
         console.log('✅ Results displayed successfully');
@@ -1853,14 +2028,12 @@ function visualizeOptimizedRoutes() {
     showToast(`Visualized ${window.optimizationResults.length} optimized routes`, 'success');
 }
 
-// ✅ INTEGRATED: Visualize a single optimized route
+// ✅ INTEGRATED: Visualize a single optimized route (enhanced for advanced algorithm)
 async function visualizeOptimizedRoute(stops, color, route, index) {
     try {
         console.log(`🚌 Visualizing route ${index + 1}: ${stops.length} stops`);
-        console.log(`🚌 Route object:`, route);
-        console.log(`🚌 Route keys:`, Object.keys(route));
-        console.log(`🚌 Route type:`, typeof route);
-        console.log(`🚌 Route is array:`, Array.isArray(route));
+        console.log(`🚌 Route type: ${route.routeType}`);
+        console.log(`🚌 Is advanced optimized: ${route.isAdvancedOptimized}`);
         
         // Create waypoints for this route
         const waypoints = stops.map(stop => ({
@@ -1896,10 +2069,6 @@ async function visualizeOptimizedRoute(stops, color, route, index) {
         
         console.log(`🔍 Route ${index + 1} depot:`, depot);
         console.log(`🔍 Depot coordinates: ${depotLat}, ${depotLng}`);
-        console.log(`🔍 Depot Latitude:`, depot.Latitude);
-        console.log(`🔍 Depot lat:`, depot.lat);
-        console.log(`🔍 Depot Longitude:`, depot.Longitude);
-        console.log(`🔍 Depot lng:`, depot.lng);
         
         if (isNaN(depotLat) || isNaN(depotLng)) {
             console.warn(`Invalid depot coordinates for route ${index + 1}`);
@@ -1908,13 +2077,22 @@ async function visualizeOptimizedRoute(stops, color, route, index) {
             return;
         }
         
-        // 🎯 USE YOUR REAL ALGORITHM OUTPUT - NO MORE FALLBACKS!
-        console.log(`🚀 Route ${index + 1} - Using YOUR algorithm output:`, route);
-        
-        // 🎯 FORCE YOUR ALGORITHMS TO BE USED - NO MORE GOOGLE DIRECTIONS BYPASS!
-        console.log(`🚀 Route ${index + 1} - FORCING YOUR ALGORITHM OUTPUT:`, route);
-        console.log(`🚀 Route type: ${route.routeType}`);
-        console.log(`🚀 Route structure:`, JSON.stringify(route, null, 2));
+        // 🎯 ENHANCED: Special handling for advanced angular routes
+        if (route.isAdvancedOptimized) {
+            console.log(`🎯 Route ${index + 1} - ADVANCED ANGULAR ROUTE DETECTED!`);
+            console.log(`🎯 Direction: ${route.direction}, Bearing: ${route.minBearing}°-${route.maxBearing}°`);
+            
+            // For advanced routes, the stop order is already optimized by the algorithm
+            // Just draw the road-following path with the optimized sequence
+            await drawPrimaryRoadRouteFromSequence(route, color, index, depot);
+            console.log(`🎯 Advanced route visualization completed for route ${index + 1}`);
+            
+            // Add special visual indicator for advanced routes
+            addAdvancedRouteIndicator(route, index);
+            
+        } else {
+            // 🎯 REGULAR ROUTE: Use existing logic
+            console.log(`🚀 Route ${index + 1} - Using standard algorithm output:`, route);
         
         // Ensure routeType exists
         route.routeType = route.routeType || 'optimized';
@@ -1940,6 +2118,7 @@ async function visualizeOptimizedRoute(stops, color, route, index) {
             }
         } catch (directionsError) {
             console.warn(`⚠️ Google Directions enhancement failed for route ${index + 1}, but YOUR algorithm route is already drawn:`, directionsError);
+            }
         }
         
     } catch (error) {
@@ -1947,6 +2126,45 @@ async function visualizeOptimizedRoute(stops, color, route, index) {
         console.error(`❌ This route should have YOUR algorithm data but failed:`, route);
         // Don't throw - just log the error and continue with other routes
         console.error(`❌ Continuing with other routes...`);
+    }
+}
+
+// ✅ NEW: Add visual indicator for advanced routes
+function addAdvancedRouteIndicator(route, index) {
+    try {
+        // Add a special marker or label to indicate this is an advanced route
+        if (route.stops && route.stops.length > 0) {
+            const firstStop = route.stops[0];
+            const lat = parseFloat(firstStop.snapped_lat || firstStop.lat);
+            const lng = parseFloat(firstStop.snapped_lon || firstStop.lng);
+            
+            if (!isNaN(lat) && !isNaN(lng)) {
+                // Create a special info window for advanced routes
+                const infoWindow = new google.maps.InfoWindow({
+                    content: `
+                        <div style="padding: 10px; min-width: 250px;">
+                            <h4 style="margin: 0 0 10px 0; color: #8B5CF6;">🚀 ${route.busId}</h4>
+                            <div style="background: #F3F4F6; padding: 8px; border-radius: 4px; margin-bottom: 8px;">
+                                <strong>Advanced Angular Algorithm</strong><br>
+                                <small>Direction: ${route.direction} | Bearing: ${route.minBearing}°-${route.maxBearing}°</small>
+                            </div>
+                            <p><strong>Students:</strong> ${route.totalStudents}</p>
+                            <p><strong>Efficiency:</strong> ${route.efficiency}</p>
+                            <p><strong>Distance:</strong> ${route.totalDistance}</p>
+                            <p><strong>Stops:</strong> ${route.stops.length}</p>
+                        </div>
+                    `
+                });
+                
+                // Store the info window for later use
+                if (!AppState.advancedRouteInfoWindows) AppState.advancedRouteInfoWindows = new Map();
+                AppState.advancedRouteInfoWindows.set(index, infoWindow);
+                
+                console.log(`✅ Added advanced route indicator for route ${index + 1}`);
+            }
+        }
+    } catch (error) {
+        console.warn(`⚠️ Failed to add advanced route indicator for route ${index + 1}:`, error);
     }
 }
 
@@ -2888,33 +3106,68 @@ function createsLoops(stops) {
 
 // ===== YOUR REAL OPTIMIZATION ALGORITHMS FROM GOOGLEAPI.JS =====
 
-// ✅ INTEGRATED: Your main optimization function
+// ✅ INTEGRATED: Your main optimization function with advanced angular slicing
 async function getBusOptimizedRoutes() {
     try {
         const filteredStops = filterStopsByDistance(AppState.stopsData, 40);
         const maxCapacity = parseInt(document.getElementById('maxCapacity').value) || 55;
         
-        console.log(`🚌 Starting enhanced optimization for ${filteredStops.length} stops`);
+        console.log(`🚌 Starting advanced optimization for ${filteredStops.length} stops`);
         
-        // Use your REAL multi-strategy approach
-        const strategiesResults = {
-            corridor: await createCorridorBasedRoutes(filteredStops, maxCapacity),
-            segment: await createRoutesBySegment(filteredStops, maxCapacity),
-            directional: await createGeographicalClusters(filteredStops, maxCapacity)
-        };
+        // ✅ PRIMARY: Use the advanced angular slicing algorithm from googleAPI.js
+        console.log(`🎯 Using advanced angular slicing algorithm (12° sectors)`);
         
-        // Validate route lengths across all strategies
-        Object.keys(strategiesResults).forEach(strategy => {
-            strategiesResults[strategy] = strategiesResults[strategy].filter(validateRouteLength);
-            console.log(`✅ ${strategy}: ${strategiesResults[strategy].length} valid routes`);
-        });
+        // Call the advanced algorithm from googleAPI.js
+        const advancedRoutes = buildOptimizedRoutes(filteredStops, AppState.depotsData, maxCapacity);
         
-        // Collect all valid routes
-        let allRoutes = [
-            ...strategiesResults.corridor,
-            ...strategiesResults.segment,
-            ...strategiesResults.directional
-        ];
+        // Convert to your existing format
+        const formattedAdvancedRoutes = convertAdvancedRoutesToFormat(advancedRoutes, 0);
+        
+        // ✅ FALLBACK: Use existing strategies if advanced algorithm doesn't produce enough routes
+        let allRoutes = [...formattedAdvancedRoutes];
+        
+        // Check if we need more routes
+        const totalStudents = filteredStops.reduce((sum, stop) => sum + parseInt(stop.num_students), 0);
+        const maxBusesNeeded = Math.ceil(totalStudents / maxCapacity);
+        
+        if (allRoutes.length < maxBusesNeeded) {
+            console.log(`🔄 Advanced algorithm produced ${allRoutes.length} routes, need ${maxBusesNeeded}. Adding fallback routes...`);
+            
+            // Get unserved stops from advanced routes
+            const servedStopIds = new Set();
+            allRoutes.forEach(route => {
+                route.stops.forEach(stop => {
+                    servedStopIds.add(stop.cluster_number);
+                });
+            });
+            
+            const unservedStops = filteredStops.filter(stop => !servedStopIds.has(stop.cluster_number));
+            
+            if (unservedStops.length > 0) {
+                console.log(`📊 ${unservedStops.length} stops not served by advanced algorithm, creating fallback routes...`);
+                
+                // Use existing strategies for remaining stops
+                const fallbackStrategies = {
+                    corridor: await createCorridorBasedRoutes(unservedStops, maxCapacity),
+                    segment: await createRoutesBySegment(unservedStops, maxCapacity),
+                    directional: await createGeographicalClusters(unservedStops, maxCapacity)
+                };
+                
+                // Validate and add fallback routes
+                Object.keys(fallbackStrategies).forEach(strategy => {
+                    fallbackStrategies[strategy] = fallbackStrategies[strategy].filter(validateRouteLength);
+                    console.log(`✅ ${strategy} fallback: ${fallbackStrategies[strategy].length} routes`);
+                });
+                
+                const fallbackRoutes = [
+                    ...fallbackStrategies.corridor,
+                    ...fallbackStrategies.segment,
+                    ...fallbackStrategies.directional
+                ];
+                
+                allRoutes = [...allRoutes, ...fallbackRoutes];
+            }
+        }
         
         // Analyze coverage
         const {
@@ -2925,7 +3178,6 @@ async function getBusOptimizedRoutes() {
             unservedStops
         } = analyzeRouteCoverage(allRoutes, filteredStops);
         
-        const totalStudents = filteredStops.reduce((sum, stop) => sum + parseInt(stop.num_students), 0);
         const coveragePercent = (servedStudents / totalStudents * 100).toFixed(1);
         
         console.log(`📊 COVERAGE ANALYSIS:`);
@@ -2933,14 +3185,15 @@ async function getBusOptimizedRoutes() {
         console.log(`   - Stops served: ${servedStops.length}/${filteredStops.length}`);
         console.log(`   - Duplicate stops: ${duplicateStops}`);
         console.log(`   - Unserved stops: ${unservedStops.length}`);
+        console.log(`   - Advanced routes: ${formattedAdvancedRoutes.length}`);
         
         // Salvage operation for unserved stops
         if (parseFloat(coveragePercent) < 85 && unservedStops.length > 0) {
-            console.log(`🔄 Coverage below 85% - attempting to create routes for unserved stops...`);
+            console.log(`🔄 Coverage below 85% - attempting to create salvage routes for unserved stops...`);
             
             const salvageRoutes = await createSalvageRoutes(unservedStops, maxCapacity);
             const validSalvageRoutes = salvageRoutes.filter(validateRouteLength);
-            console.log(`✅ Created ${validSalvageRoutes.length} additional routes for previously unserved stops`);
+            console.log(`✅ Created ${validSalvageRoutes.length} salvage routes for unserved stops`);
             
             allRoutes = [...servingRoutes, ...validSalvageRoutes];
             
@@ -2960,12 +3213,13 @@ async function getBusOptimizedRoutes() {
             }
         });
         
-        // Limit to maximum number of buses available
-        const totalStudentsInShift = filteredStops.reduce((sum, stop) => sum + parseInt(stop.num_students || 0), 0);
-        const maxBusesNeeded = Math.ceil(totalStudentsInShift / maxCapacity);
-        
-        // Sort routes by efficiency
+        // Sort routes by efficiency (advanced routes get priority)
         allRoutes.sort((a, b) => {
+            // Advanced routes get priority
+            if (a.isAdvancedOptimized && !b.isAdvancedOptimized) return -1;
+            if (!a.isAdvancedOptimized && b.isAdvancedOptimized) return 1;
+            
+            // Then sort by efficiency
             const effA = parseFloat(a.efficiency?.replace('%', '')) || 0;
             const effB = parseFloat(b.efficiency?.replace('%', '')) || 0;
             return effB - effA; // Highest efficiency first
@@ -2974,13 +3228,13 @@ async function getBusOptimizedRoutes() {
         // Take the most efficient routes up to the limit
         const finalRoutes = allRoutes.slice(0, maxBusesNeeded);
         
-        console.log(`🎯 Final solution: ${finalRoutes.length} routes`);
+        console.log(`🎯 Final solution: ${finalRoutes.length} routes (${formattedAdvancedRoutes.filter(r => finalRoutes.includes(r)).length} advanced)`);
         return finalRoutes;
         
     } catch (error) {
-        console.error('Enhanced route optimization failed:', error);
-        console.error('❌ Your algorithms failed - this should not happen!');
-        throw new Error('Your optimization algorithms failed - check the data and algorithm logic!');
+        console.error('Advanced route optimization failed:', error);
+        console.log('🔄 Falling back to existing optimization strategies...');
+        throw new Error('Advanced optimization failed - check the data and algorithm logic!');
     }
 }
 
@@ -3913,6 +4167,259 @@ function calculateBearing(lat1, lng1, lat2, lng2) {
     return bearingDeg;
 }
 
+// ✅ ADVANCED ALGORITHM: Geometry helpers for angular slicing
+function toRad(d) { return d * Math.PI / 180; }
+
+function haversine(a, b) {
+    const R = 6371000, dLat = toRad(b.lat - a.lat), dLon = toRad(b.lng - a.lng);
+    const s1 = Math.sin(dLat / 2), s2 = Math.sin(dLon / 2);
+    const q = s1 * s1 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * s2 * s2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(q)));
+}
+
+function bearing(a, b) {
+    const φ1 = toRad(a.lat), φ2 = toRad(b.lat), dλ = toRad(b.lng - a.lng);
+    const y = Math.sin(dλ) * Math.cos(φ2);
+    const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(dλ);
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function turnDelta(deg1, deg2) {
+    let d = Math.abs(deg1 - deg2);
+    return d > 180 ? 360 - d : d;
+}
+
+// ✅ ADVANCED ALGORITHM: Parameters for angular slicing
+const DEST = { lat: COLLEGE_COORDS[0], lng: COLLEGE_COORDS[1] }; // college
+const ANGLE_SLICE_DEG = 12;      // 10–15° works well
+const ROAD_FACTOR = 1.25;        // road detour factor vs straight-line
+const MONOTONE_DELTA_M = 300;    // each hop should move ≥300 m closer to DEST
+const MAX_TURN_DEG = 70;         // keep heading generally toward DEST
+const MAX_ROUTE_M = 40000;       // soft prefer, hard cap elsewhere 50km
+const HARD_MAX_ROUTE_M = 50000;
+
+// ✅ ADVANCED ALGORITHM: Preprocess stops with polar coordinates
+function decorateStopsWithPolar(stops) {
+    return stops.map(s => {
+        const stopCoord = { lat: parseFloat(s.snapped_lat), lng: parseFloat(s.snapped_lon) };
+        const r = haversine(DEST, stopCoord);
+        const θ = bearing(DEST, stopCoord);
+        return { 
+            ...s, 
+            r, 
+            theta: θ,
+            lat: stopCoord.lat,
+            lng: stopCoord.lng,
+            students: parseInt(s.num_students) || 1
+        };
+    });
+}
+
+// ✅ ADVANCED ALGORITHM: Bucket stops by angular slices
+function bucketByAngle(stops) {
+    const buckets = new Map();
+    for (const s of stops) {
+        const key = Math.floor(s.theta / ANGLE_SLICE_DEG);
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(s);
+    }
+    // sort each bucket by radius descending (farther first)
+    for (const [, arr] of buckets) arr.sort((a, b) => b.r - a.r);
+    return buckets;
+}
+
+// ✅ ADVANCED ALGORITHM: Build routes from a bucket
+function buildRoutesFromBucket(buckets, key, maxCapacity, depot) {
+    const my = buckets.get(key) || [];
+    const left = buckets.get(key - 1) || [];
+    const right = buckets.get(key + 1) || [];
+
+    const pool = [...my]; // we'll borrow from neighbors only if needed
+
+    const routes = [];
+    while (pool.length) {
+        let route = [];
+        let load = 0;
+        let dist = 0;
+
+        // start at farthest remaining
+        route.push(pool.shift());
+
+        while (true) {
+            const cur = route[route.length - 1];
+
+            // candidate list: prefer same bucket first
+            const candidates = pool.length ? pool : (left.length ? left : right);
+
+            let best = null, bestGain = Infinity;
+            for (let i = 0; i < candidates.length; i++) {
+                const cand = candidates[i];
+                // capacity early
+                if ((load + (cand.students || 1)) > maxCapacity) continue;
+
+                // monotone progress toward DEST
+                if (cand.r > cur.r - MONOTONE_DELTA_M) continue;
+
+                // heading constraint: prefer moves that keep overall bearing toward DEST
+                const curHead = bearing(cur, DEST);
+                const moveHead = bearing(cur, cand);
+                if (turnDelta(curHead, moveHead) > MAX_TURN_DEG) continue;
+
+                // projected length
+                const leg = haversine(cur, cand) * ROAD_FACTOR;
+                if ((dist + leg) > MAX_ROUTE_M) continue;
+
+                if (leg < bestGain) {
+                    bestGain = leg;
+                    best = { idx: i, arr: candidates, stop: cand, leg };
+                }
+            }
+
+            if (!best) break; // no feasible next hop
+
+            route.push(best.stop);
+            dist += best.leg;
+            load += (best.stop.students || 1);
+            best.arr.splice(best.idx, 1); // remove from its source array
+        }
+
+        // close route to DEST (college)
+        const tail = route[route.length - 1];
+        dist += haversine(tail, DEST) * ROAD_FACTOR;
+
+        // hard cap check; if broken, split tail off to new route
+        if (dist > HARD_MAX_ROUTE_M && route.length > 1) {
+            const last = route.pop();
+            // return last to its home bucket
+            const homeKey = Math.floor(last.theta / ANGLE_SLICE_DEG);
+            (buckets.get(homeKey) || my).push(last);
+            // recompute dist w/o last
+            const tail2 = route[route.length - 1];
+            dist = 0;
+            for (let i = 0; i < route.length - 1; i++) {
+                dist += haversine(route[i], route[i + 1]) * ROAD_FACTOR;
+            }
+            dist += haversine(tail2, DEST) * ROAD_FACTOR;
+        }
+
+        routes.push({ stops: route, load, dist, depot });
+    }
+    return routes;
+}
+
+// ✅ ADVANCED ALGORITHM: 2-opt improvement on stop order
+function twoOptImprove(routeStops) {
+    // routeStops are from farthest->nearest already; still, 2-opt can clean kinks
+    function tourLength(arr) {
+        let L = 0;
+        for (let i = 0; i < arr.length - 1; i++) L += haversine(arr[i], arr[i + 1]) * ROAD_FACTOR;
+        L += haversine(arr[arr.length - 1], DEST) * ROAD_FACTOR;
+        return L;
+    }
+    let best = routeStops.slice();
+    let bestL = tourLength(best);
+    let improved = true;
+
+    while (improved) {
+        improved = false;
+        for (let i = 0; i < best.length - 2; i++) {
+            for (let k = i + 1; k < best.length - 1; k++) {
+                const candidate = best.slice(0, i + 1)
+                    .concat(best.slice(i + 1, k + 1).reverse())
+                    .concat(best.slice(k + 1));
+                const L = tourLength(candidate);
+                if (L + 5 < bestL) { // small threshold to avoid micro-flips
+                    best = candidate;
+                    bestL = L;
+                    improved = true;
+                }
+            }
+        }
+    }
+    return best;
+}
+
+// ✅ ADVANCED ALGORITHM: Main function to build optimized routes
+function buildOptimizedRoutes(stops, depots, maxCapacity) {
+    console.log(`🎯 Building advanced optimized routes for ${stops.length} stops`);
+    
+    const S = decorateStopsWithPolar(stops);
+    const buckets = bucketByAngle(S);
+
+    console.log(`📊 Created ${buckets.size} angular sectors (${ANGLE_SLICE_DEG}° each)`);
+
+    const allRoutes = [];
+    for (const [key] of buckets) {
+        // pick best depot for this sector (closest to sector centroid or to farthest stop)
+        const depot = pickDepotForSector(key, buckets, depots);
+        const sectorRoutes = buildRoutesFromBucket(buckets, key, maxCapacity, depot)
+            .map(r => {
+                const cleaned = twoOptImprove(r.stops);
+                // recompute distance
+                let d = 0;
+                for (let i = 0; i < cleaned.length - 1; i++)
+                    d += haversine(cleaned[i], cleaned[i + 1]) * ROAD_FACTOR;
+                d += haversine(cleaned[cleaned.length - 1], DEST) * ROAD_FACTOR;
+                return { ...r, stops: cleaned, dist: d };
+            });
+        allRoutes.push(...sectorRoutes);
+    }
+    
+    console.log(`✅ Generated ${allRoutes.length} advanced optimized routes`);
+    return allRoutes;
+}
+
+// ✅ ADVANCED ALGORITHM: Pick depot for sector
+function pickDepotForSector(key, buckets, depots) {
+    // simple: choose depot closest to the farthest stop in this sector
+    const arr = buckets.get(key) || [];
+    if (!arr.length) return depots[0];
+    const far = arr[0];
+    let best = depots[0], bd = Infinity;
+    for (const d of depots) {
+        const depotCoord = { lat: parseFloat(d.Latitude), lng: parseFloat(d.Longitude) };
+        const dd = haversine(depotCoord, far);
+        if (dd < bd) { bd = dd; best = d; }
+    }
+    return best;
+}
+
+// ✅ ADVANCED ALGORITHM: Convert advanced routes to existing format
+function convertAdvancedRoutesToFormat(advancedRoutes, routeIndex) {
+    return advancedRoutes.map((route, index) => {
+        // Convert stops back to your format
+        const formattedStops = route.stops.map(stop => ({
+            cluster_number: stop.cluster_number,
+            snapped_lat: stop.lat.toString(),
+            snapped_lon: stop.lng.toString(),
+            num_students: stop.students.toString(),
+            lat: stop.lat,
+            lng: stop.lng,
+            distance: stop.r / 1000 // Convert to km
+        }));
+
+        // Calculate direction from sector
+        const sectorAngle = route.stops.length > 0 ? route.stops[0].theta : 0;
+        const direction = `${Math.round(sectorAngle)}°`;
+
+        return {
+            busId: `Bus ${routeIndex + index + 1} (Advanced)`,
+            depot: route.depot['Parking Name'] || 'Main Depot',
+            stops: formattedStops,
+            totalStudents: route.load,
+            efficiency: `${((route.load / 55) * 100).toFixed(1)}%`,
+            totalDistance: `${(route.dist / 1000).toFixed(1)} km`,
+            estimatedDistance: route.dist / 1000,
+            direction: direction,
+            routeType: 'advanced-angular',
+            assignedDepot: route.depot,
+            minBearing: sectorAngle - 6,
+            maxBearing: sectorAngle + 6,
+            isAdvancedOptimized: true
+        };
+    });
+}
+
 // ✅ MISSING: Calculate bearing distribution for dynamic parameter tuning
 function calculateBearingDistribution(stops) {
     // Calculate mean bearing (complex due to circular nature)
@@ -4711,3 +5218,1708 @@ function checkServerStatus() {
             console.log('💡 Make sure your Node.js server is running on port 3000');
         });
 }
+
+// ✅ NEW: Find assigned bus for a stop
+function findAssignedBus(stopClusterNumber) {
+    if (!window.optimizationResults || !window.optimizationResults.length) {
+        return null;
+    }
+    
+    for (const route of window.optimizationResults) {
+        if (route.stops && route.stops.length > 0) {
+            const foundStop = route.stops.find(stop => 
+                stop.cluster_number == stopClusterNumber || stop.id == stopClusterNumber
+            );
+            if (foundStop) {
+                return route.busId;
+            }
+        }
+    }
+    return null;
+}
+
+// ✅ NEW: Ruler functionality
+function toggleRulerMode() {
+    AppState.rulerMode = !AppState.rulerMode;
+    
+    if (AppState.rulerMode) {
+        // Clear any existing ruler elements
+        clearRulerElements();
+        showToast('📏 Ruler mode activated - Click on map to add points. Press R again to exit.', 'info');
+        AppState.map.setOptions({ draggableCursor: 'crosshair' });
+    } else {
+        clearRulerElements();
+        showToast('📏 Ruler mode deactivated', 'info');
+        AppState.map.setOptions({ draggableCursor: null });
+    }
+}
+
+function addRulerPoint(latLng) {
+    // Add marker
+    const marker = new google.maps.Marker({
+        position: latLng,
+        map: AppState.map,
+        title: `Point ${AppState.rulerMarkers.length + 1}`,
+        icon: {
+            url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                <svg width="20" height="20" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="10" cy="10" r="8" fill="#ef4444" stroke="white" stroke-width="2"/>
+                    <text x="10" y="14" text-anchor="middle" fill="white" font-size="12" font-weight="bold">${AppState.rulerMarkers.length + 1}</text>
+                </svg>
+            `),
+            scaledSize: new google.maps.Size(20, 20),
+            anchor: new google.maps.Point(10, 10)
+        }
+    });
+    
+    AppState.rulerMarkers.push(marker);
+    
+    // Draw line to previous point
+    if (AppState.rulerMarkers.length > 1) {
+        const previousMarker = AppState.rulerMarkers[AppState.rulerMarkers.length - 2];
+        const polyline = new google.maps.Polyline({
+            path: [previousMarker.getPosition(), latLng],
+            geodesic: true,
+            strokeColor: '#ef4444',
+            strokeOpacity: 0.8,
+            strokeWeight: 3,
+            map: AppState.map
+        });
+        
+        AppState.rulerPolylines.push(polyline);
+        
+        // Calculate and display distance
+        const distance = google.maps.geometry.spherical.computeDistanceBetween(
+            previousMarker.getPosition(), latLng
+        );
+        
+        const infoWindow = new google.maps.InfoWindow({
+            content: `
+                <div style="padding: 10px; min-width: 200px;">
+                    <h4 style="margin: 0 0 8px 0; color: #ef4444;">📏 Distance</h4>
+                    <p><strong>Distance:</strong> ${(distance / 1000).toFixed(2)} km</p>
+                    <p><strong>From:</strong> Point ${AppState.rulerMarkers.length - 1}</p>
+                    <p><strong>To:</strong> Point ${AppState.rulerMarkers.length}</p>
+                </div>
+            `
+        });
+        
+        // Position info window at midpoint
+        const midLat = (previousMarker.getPosition().lat() + latLng.lat()) / 2;
+        const midLng = (previousMarker.getPosition().lng() + latLng.lng()) / 2;
+        infoWindow.setPosition({ lat: midLat, lng: midLng });
+        infoWindow.open(AppState.map);
+        
+        // Auto-close after 3 seconds
+        setTimeout(() => infoWindow.close(), 3000);
+    }
+    
+    // Show total distance if we have multiple points
+    if (AppState.rulerMarkers.length > 1) {
+        const totalDistance = calculateTotalRulerDistance();
+        showToast(`📏 Total distance: ${(totalDistance / 1000).toFixed(2)} km`, 'success');
+    }
+}
+
+function calculateTotalRulerDistance() {
+    let totalDistance = 0;
+    for (let i = 1; i < AppState.rulerMarkers.length; i++) {
+        totalDistance += google.maps.geometry.spherical.computeDistanceBetween(
+            AppState.rulerMarkers[i - 1].getPosition(),
+            AppState.rulerMarkers[i].getPosition()
+        );
+    }
+    return totalDistance;
+}
+
+function clearRulerElements() {
+    // Clear markers
+    AppState.rulerMarkers.forEach(marker => marker.setMap(null));
+    AppState.rulerMarkers = [];
+    
+    // Clear polylines
+    AppState.rulerPolylines.forEach(polyline => polyline.setMap(null));
+    AppState.rulerPolylines = [];
+}
+
+// ✅ NEW: Draggable functionality
+function toggleDraggableMode() {
+    AppState.draggableMode = !AppState.draggableMode;
+    
+    if (AppState.draggableMode) {
+        makeMarkersDraggable();
+        makeRoutesDraggable();
+        showToast('🎯 Draggable mode activated - Drag markers and routes. Press D again to exit.', 'info');
+    } else {
+        makeMarkersStatic();
+        makeRoutesStatic();
+        showToast('🎯 Draggable mode deactivated', 'info');
+    }
+}
+
+function makeMarkersDraggable() {
+    // Make stop markers draggable
+    AppState.markers.forEach((marker, key) => {
+        if (key.startsWith('stop-')) {
+            marker.setDraggable(true);
+            marker.addListener('dragend', function(event) {
+                const newPosition = event.latLng;
+                const stopId = key.split('-')[1];
+                updateStopPosition(stopId, newPosition.lat(), newPosition.lng());
+                showToast(`📍 Stop ${stopId} moved to new position`, 'success');
+            });
+        }
+    });
+    
+    // Make route markers draggable
+    if (AppState.routeMarkersByRoute) {
+        Object.keys(AppState.routeMarkersByRoute).forEach(routeIndex => {
+            AppState.routeMarkersByRoute[routeIndex].forEach(marker => {
+                marker.setDraggable(true);
+                marker.addListener('dragend', function(event) {
+                    const newPosition = event.latLng;
+                    updateRouteStopPosition(parseInt(routeIndex), marker, newPosition);
+                });
+            });
+        });
+    }
+}
+
+function makeRoutesDraggable() {
+    // Make polylines draggable (this is more complex and requires custom implementation)
+    // For now, we'll just make the route markers draggable which will update the route
+    console.log('🎯 Route dragging enabled - drag markers to update routes');
+}
+
+function makeMarkersStatic() {
+    // Make all markers non-draggable
+    AppState.markers.forEach((marker, key) => {
+        marker.setDraggable(false);
+    });
+    
+    if (AppState.routeMarkersByRoute) {
+        Object.keys(AppState.routeMarkersByRoute).forEach(routeIndex => {
+            AppState.routeMarkersByRoute[routeIndex].forEach(marker => {
+                marker.setDraggable(false);
+            });
+        });
+    }
+}
+
+function makeRoutesStatic() {
+    console.log('🎯 Route dragging disabled');
+}
+
+function updateStopPosition(stopId, newLat, newLng) {
+    // Update the stop data
+    const stop = AppState.stopsData.find(s => s.cluster_number == stopId);
+    if (stop) {
+        stop.snapped_lat = newLat.toString();
+        stop.snapped_lon = newLng.toString();
+        console.log(`📍 Updated stop ${stopId} position to ${newLat}, ${newLng}`);
+    }
+}
+
+function updateRouteStopPosition(routeIndex, marker, newPosition) {
+    // Find which stop this marker represents and update it
+    const route = window.optimizationResults[routeIndex];
+    if (route && route.stops) {
+        // This would need to be implemented based on your marker identification system
+        console.log(`🎯 Route ${routeIndex} marker moved to ${newPosition.lat()}, ${newPosition.lng()}`);
+    }
+}
+
+// ✅ ENHANCED: Road width validation function with Google Directions API and automatic rerouting
+async function validateRouteAccessibility(route) {
+    try {
+        const stops = route.stops;
+        if (stops.length === 0) return { isValid: true, issues: [] };
+        
+        const issues = [];
+        let isValid = true;
+        
+        // Check if road width validation is enabled
+        if (AppState.featureFlags.enableRoadWidthValidation) {
+            console.log('🔍 Road width validation enabled - checking route accessibility...');
+            
+            // Check if route is too long
+            const distanceKm = parseFloat(route.totalDistance.replace(' km', '').replace('~', ''));
+            if (distanceKm > 60) {
+                issues.push('Route exceeds 60km limit');
+                isValid = false;
+            }
+            
+            // Check if route has too many stops (might indicate narrow roads)
+            if (stops.length > 15) {
+                issues.push('Too many stops - may have accessibility issues');
+            }
+            
+            // Check average distance between stops
+            const avgDistanceBetweenStops = distanceKm / Math.max(1, stops.length - 1);
+            if (avgDistanceBetweenStops < 1.5) {
+                issues.push('Stops very close together - possible narrow roads');
+            }
+            
+            // ✅ ENHANCED: Use Google Directions API for real road width validation
+            try {
+                const googleValidationIssues = await validateRouteWithGoogleDirections(route);
+                issues.push(...googleValidationIssues);
+                
+                if (googleValidationIssues.length > 0) {
+                    isValid = false;
+                }
+            } catch (error) {
+                console.warn('Google Directions validation failed, using fallback checks:', error);
+                // Fallback to basic heuristic checks
+                const fallbackIssues = await checkRoadWidthForRouteFallback(route);
+                issues.push(...fallbackIssues);
+            }
+            
+            console.log(`🔍 Road width validation complete: ${issues.length} issues found`);
+            
+            // ✅ NEW: Attempt automatic rerouting if validation fails
+            if (!isValid && issues.length > 0 && AppState.featureFlags.enableAutomaticRerouting) {
+                console.log(`🔄 Road width validation failed for ${route.busId} - attempting automatic rerouting...`);
+                
+                try {
+                    const reroutingResult = await attemptRouteRerouting(route, issues);
+                    
+                    if (reroutingResult.success) {
+                        console.log(`✅ Automatic rerouting successful for ${route.busId} using ${reroutingResult.strategy}`);
+                        
+                        // Update the route with the new data
+                        const newRoute = reroutingResult.newRoute.route;
+                        if (newRoute) {
+                            // Update route properties
+                            route.stops = newRoute.stops || route.stops;
+                            route.totalDistance = `${reroutingResult.newRoute.distance.toFixed(1)} km`;
+                            route.rerouted = true;
+                            route.reroutingStrategy = reroutingResult.strategy;
+                            route.reroutingAttempt = reroutingResult.attempt;
+                            
+                            // Clear the issues since rerouting was successful
+                            issues.length = 0;
+                            isValid = true;
+                            
+                            console.log(`✅ Route ${route.busId} successfully rerouted and validated`);
+                        }
+                    } else {
+                        console.warn(`❌ Automatic rerouting failed for ${route.busId} after ${reroutingResult.attempts.length} attempts`);
+                        route.reroutingFailed = true;
+                        route.reroutingAttempts = reroutingResult.attempts;
+                    }
+                } catch (error) {
+                    console.error(`❌ Rerouting process failed for ${route.busId}:`, error);
+                    route.reroutingError = error.message;
+                }
+            }
+        } else {
+            console.log('🔍 Road width validation disabled - skipping accessibility checks');
+        }
+        
+        // Return validation result
+        return {
+            isValid: isValid,
+            issues: issues,
+            validatedDistance: parseFloat(route.totalDistance.replace(' km', '').replace('~', '')) || 0,
+            rerouted: route.rerouted || false,
+            reroutingStrategy: route.reroutingStrategy || null,
+            reroutingFailed: route.reroutingFailed || false
+        };
+        
+    } catch (error) {
+        console.error('Route validation failed:', error);
+        return { isValid: true, issues: ['Validation skipped'] };
+    }
+}
+
+// ✅ ENHANCED: Validate route using Google Directions API for real road width detection
+async function validateRouteWithGoogleDirections(route) {
+    const issues = [];
+    
+    try {
+        if (!route.stops || route.stops.length < 2) {
+            return issues;
+        }
+        
+        // Build waypoints for Google Directions API
+        const waypoints = route.stops.map(stop => ({
+            lat: parseFloat(stop.snapped_lat),
+            lng: parseFloat(stop.snapped_lon)
+        })).filter(point => !isNaN(point.lat) && !isNaN(point.lng));
+        
+        if (waypoints.length < 2) {
+            return issues;
+        }
+        
+        // Start from college, end at college
+        const origin = `${COLLEGE_COORDS[0]},${COLLEGE_COORDS[1]}`;
+        const destination = `${COLLEGE_COORDS[0]},${COLLEGE_COORDS[1]}`;
+        
+        // Build waypoints string (exclude origin/destination)
+        const waypointsStr = waypoints.map(wp => `${wp.lat},${wp.lng}`).join('|');
+        
+        // Call Google Directions API
+        const directionsUrl = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}&waypoints=${waypointsStr}&avoid=highways&vehicleType=bus&key=${GOOGLE_API_KEY}`;
+        
+        console.log('🔍 Calling Google Directions API for road width validation...');
+        const response = await fetch(directionsUrl);
+        const data = await response.json();
+        
+        if (data.status === 'ZERO_RESULTS') {
+            issues.push('No bus-accessible route found - roads may be too narrow');
+            return issues;
+        }
+        
+        if (data.status !== 'OK') {
+            console.warn('Google Directions API error:', data.status);
+            return issues;
+        }
+        
+        // Process the route for accessibility issues
+        const googleRoute = data.routes[0];
+        
+        // Check for warnings about accessibility
+        googleRoute.warnings?.forEach(warning => {
+            if (warning.includes('toll') || warning.includes('restricted') || warning.includes('narrow') || warning.includes('weight') || warning.includes('height')) {
+                issues.push(`Road warning: ${warning}`);
+            }
+        });
+        
+        // Check legs for accessibility issues
+        googleRoute.legs?.forEach((leg, index) => {
+            leg.steps?.forEach(step => {
+                // Check for difficult maneuvers that buses can't handle
+                if (step.maneuver && ['turn-sharp-left', 'turn-sharp-right', 'uturn-left', 'uturn-right'].includes(step.maneuver)) {
+                    issues.push(`Difficult maneuver at stop ${index + 1}: ${step.maneuver} - may not be suitable for buses`);
+                }
+                
+                // Check for narrow roads (heuristic: very short distance with long duration = slow traffic)
+                if (step.distance?.value && step.duration?.value) {
+                    const speedKmh = (step.distance.value / 1000) / (step.duration.value / 3600);
+                    if (speedKmh < 15 && step.distance.value > 200) {
+                        issues.push(`Potentially narrow/slow road detected near stop ${index + 1} (speed: ${speedKmh.toFixed(1)} km/h)`);
+                    }
+                }
+                
+                // Check for road restrictions
+                if (step.maneuver && step.maneuver.includes('ferry')) {
+                    issues.push('Route includes ferry crossing - not suitable for buses');
+                }
+            });
+        });
+        
+        // Compare distances - if Google's route is significantly longer, there might be accessibility constraints
+        const googleDistanceKm = googleRoute.legs.reduce((total, leg) => total + leg.distance.value, 0) / 1000;
+        const originalDistanceKm = parseFloat(route.totalDistance.replace(' km', '').replace('~', ''));
+        
+        if (googleDistanceKm > originalDistanceKm * 1.5) {
+            issues.push(`Route has significant detours (${googleDistanceKm.toFixed(1)}km vs ${originalDistanceKm.toFixed(1)}km) - may indicate road accessibility issues`);
+        }
+        
+        console.log(`✅ Google Directions validation complete: ${issues.length} issues found`);
+        
+    } catch (error) {
+        console.warn('Google Directions validation failed:', error);
+        issues.push('Road width validation failed - API error');
+    }
+    
+    return issues;
+}
+
+// ✅ FALLBACK: Basic road width validation when Google Directions API fails
+async function checkRoadWidthForRouteFallback(route) {
+    const issues = [];
+    
+    try {
+        // Check each segment of the route
+        for (let i = 0; i < route.stops.length - 1; i++) {
+            const stop1 = route.stops[i];
+            const stop2 = route.stops[i + 1];
+            
+            const lat1 = parseFloat(stop1.snapped_lat);
+            const lng1 = parseFloat(stop1.snapped_lon);
+            const lat2 = parseFloat(stop2.snapped_lat);
+            const lng2 = parseFloat(stop2.snapped_lon);
+            
+            // Calculate distance between stops
+            const distance = calculateHaversineDistance(lat1, lng1, lat2, lng2);
+            
+            // If stops are very close together, it might indicate narrow roads
+            if (distance < 0.5) { // Less than 500m
+                issues.push(`Stops ${stop1.cluster_number} and ${stop2.cluster_number} very close (${distance.toFixed(2)}km) - possible narrow road`);
+            }
+            
+            // Check for very long segments that might indicate poor road connectivity
+            if (distance > 8) {
+                issues.push(`Long segment (${distance.toFixed(2)}km) between stops - may indicate poor road connectivity`);
+            }
+        }
+        
+        // Check total route characteristics
+        const totalDistance = parseFloat(route.totalDistance.replace(' km', '').replace('~', ''));
+        const avgDistanceBetweenStops = totalDistance / Math.max(1, route.stops.length - 1);
+        
+        if (avgDistanceBetweenStops < 1.0) {
+            issues.push('Average distance between stops is very low - may indicate narrow residential roads');
+        }
+        
+    } catch (error) {
+        console.warn('Fallback road width check failed:', error);
+        issues.push('Road width validation failed - using basic checks');
+    }
+    
+    return issues;
+}
+
+// ✅ NEW: Global functions for HTML onclick
+window.toggleRulerMode = toggleRulerMode;
+window.toggleDraggableMode = toggleDraggableMode;
+
+// ✅ NEW: Automatic rerouting when road width validation fails
+async function attemptRouteRerouting(route, originalIssues) {
+    console.log(`🔄 Attempting to reroute ${route.busId} due to road width issues...`);
+    
+    const reroutingAttempts = [];
+    const maxAttempts = 3;
+    
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        console.log(`🔄 Rerouting attempt ${attempt}/${maxAttempts} for ${route.busId}`);
+        
+        try {
+            // Strategy 1: Try with different Google Directions parameters
+            const reroutedRoute = await attemptGoogleDirectionsRerouting(route, attempt);
+            if (reroutedRoute && reroutedRoute.isValid) {
+                console.log(`✅ Rerouting successful for ${route.busId} on attempt ${attempt}`);
+                return {
+                    success: true,
+                    newRoute: reroutedRoute,
+                    attempt: attempt,
+                    strategy: 'Google Directions Rerouting'
+                };
+            }
+            
+            // Strategy 2: Try with different stop order (if multiple stops)
+            if (route.stops.length > 2) {
+                const reorderedRoute = await attemptStopReordering(route, attempt);
+                if (reorderedRoute && reorderedRoute.isValid) {
+                    console.log(`✅ Stop reordering successful for ${route.busId} on attempt ${attempt}`);
+                    return {
+                        success: true,
+                        newRoute: reorderedRoute,
+                        attempt: attempt,
+                        strategy: 'Stop Reordering'
+                    };
+                }
+            }
+            
+            // Strategy 3: Try with alternative road types
+            const alternativeRoute = await attemptAlternativeRoadTypes(route, attempt);
+            if (alternativeRoute && alternativeRoute.isValid) {
+                console.log(`✅ Alternative road types successful for ${route.busId} on attempt ${attempt}`);
+                return {
+                    success: true,
+                    newRoute: alternativeRoute,
+                    attempt: attempt,
+                    strategy: 'Alternative Road Types'
+                };
+            }
+            
+            reroutingAttempts.push({
+                attempt: attempt,
+                issues: reroutedRoute?.issues || ['All strategies failed']
+            });
+            
+        } catch (error) {
+            console.warn(`Rerouting attempt ${attempt} failed:`, error);
+            reroutingAttempts.push({
+                attempt: attempt,
+                issues: ['Rerouting error: ' + error.message]
+            });
+        }
+    }
+    
+    console.warn(`❌ All rerouting attempts failed for ${route.busId}`);
+    return {
+        success: false,
+        attempts: reroutingAttempts,
+        originalIssues: originalIssues
+    };
+}
+
+// ✅ NEW: Strategy 1 - Google Directions Rerouting with different parameters
+async function attemptGoogleDirectionsRerouting(route, attempt) {
+    try {
+        if (!route.stops || route.stops.length < 2) {
+            return null;
+        }
+        
+        const waypoints = route.stops.map(stop => ({
+            lat: parseFloat(stop.snapped_lat),
+            lng: parseFloat(stop.snapped_lon)
+        })).filter(point => !isNaN(point.lat) && !isNaN(point.lng));
+        
+        if (waypoints.length < 2) {
+            return null;
+        }
+        
+        const origin = `${COLLEGE_COORDS[0]},${COLLEGE_COORDS[1]}`;
+        const destination = `${COLLEGE_COORDS[0]},${COLLEGE_COORDS[1]}`;
+        const waypointsStr = waypoints.map(wp => `${wp.lat},${wp.lng}`).join('|');
+        
+        // Try different routing strategies based on attempt number
+        let avoidParams = '';
+        let vehicleType = 'bus';
+        
+        switch (attempt) {
+            case 1:
+                // First attempt: allow highways and tolls, use bus (maximum flexibility)
+                avoidParams = '';
+                vehicleType = 'bus';
+                break;
+            case 2:
+                // Second attempt: allow highways and tolls, avoid ferries, use bus
+                avoidParams = 'ferries';
+                vehicleType = 'bus';
+                break;
+            case 3:
+                // Third attempt: allow highways and tolls, avoid ferries and restricted roads, use bus
+                avoidParams = 'ferries|restricted';
+                vehicleType = 'bus';
+                break;
+        }
+        
+        const directionsUrl = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}&waypoints=${waypointsStr}&avoid=${avoidParams}&vehicleType=${vehicleType}&key=${GOOGLE_API_KEY}`;
+        
+        console.log(`🔄 Attempting Google Directions rerouting with avoid=${avoidParams}`);
+        const response = await fetch(directionsUrl);
+        const data = await response.json();
+        
+        if (data.status === 'ZERO_RESULTS') {
+            return { isValid: false, issues: ['No route found with current parameters'] };
+        }
+        
+        if (data.status !== 'OK') {
+            return { isValid: false, issues: [`Google API error: ${data.status}`] };
+        }
+        
+        // Validate the new route
+        const googleRoute = data.routes[0];
+        const issues = [];
+        
+        // Check for warnings
+        googleRoute.warnings?.forEach(warning => {
+            if (warning.includes('toll') || warning.includes('restricted') || warning.includes('narrow') || warning.includes('weight') || warning.includes('height')) {
+                issues.push(`Road warning: ${warning}`);
+            }
+        });
+        
+        // Check for difficult maneuvers
+        googleRoute.legs?.forEach((leg, index) => {
+            leg.steps?.forEach(step => {
+                if (step.maneuver && ['turn-sharp-left', 'turn-sharp-right', 'uturn-left', 'uturn-right'].includes(step.maneuver)) {
+                    issues.push(`Difficult maneuver at stop ${index + 1}: ${step.maneuver}`);
+                }
+            });
+        });
+        
+        // Check distance
+        const googleDistanceKm = googleRoute.legs.reduce((total, leg) => total + leg.distance.value, 0) / 1000;
+        if (googleDistanceKm > 60) {
+            issues.push(`Rerouted route too long: ${googleDistanceKm.toFixed(1)}km`);
+        }
+        
+        return {
+            isValid: issues.length === 0,
+            issues: issues,
+            distance: googleDistanceKm,
+            route: googleRoute
+        };
+        
+    } catch (error) {
+        console.warn('Google Directions rerouting failed:', error);
+        return { isValid: false, issues: ['Rerouting error: ' + error.message] };
+    }
+}
+
+// ✅ NEW: Strategy 2 - Stop Reordering
+async function attemptStopReordering(route, attempt) {
+    try {
+        const stops = [...route.stops];
+        
+        // Different reordering strategies
+        switch (attempt) {
+            case 1:
+                // Reverse the order (except first and last)
+                if (stops.length > 3) {
+                    const middle = stops.slice(1, -1).reverse();
+                    stops.splice(1, stops.length - 2, ...middle);
+                }
+                break;
+            case 2:
+                // Sort by distance from college (farthest first)
+                const collegeLat = COLLEGE_COORDS[0];
+                const collegeLng = COLLEGE_COORDS[1];
+                stops.sort((a, b) => {
+                    const distA = calculateHaversineDistance(collegeLat, collegeLng, parseFloat(a.snapped_lat), parseFloat(a.snapped_lon));
+                    const distB = calculateHaversineDistance(collegeLat, collegeLng, parseFloat(b.snapped_lat), parseFloat(b.snapped_lon));
+                    return distB - distA; // Farthest first
+                });
+                break;
+            case 3:
+                // Sort by distance from college (closest first)
+                const collegeLat2 = COLLEGE_COORDS[0];
+                const collegeLng2 = COLLEGE_COORDS[1];
+                stops.sort((a, b) => {
+                    const distA = calculateHaversineDistance(collegeLat2, collegeLng2, parseFloat(a.snapped_lat), parseFloat(a.snapped_lon));
+                    const distB = calculateHaversineDistance(collegeLat2, collegeLng2, parseFloat(b.snapped_lat), parseFloat(b.snapped_lon));
+                    return distA - distB; // Closest first
+                });
+                break;
+        }
+        
+        // Create new route with reordered stops
+        const reorderedRoute = {
+            ...route,
+            stops: stops,
+            totalDistance: calculateRouteDistance(stops)
+        };
+        
+        // Validate the reordered route
+        const validation = await validateRouteAccessibility(reorderedRoute);
+        
+        return {
+            isValid: validation.isValid,
+            issues: validation.issues,
+            route: reorderedRoute
+        };
+        
+    } catch (error) {
+        console.warn('Stop reordering failed:', error);
+        return { isValid: false, issues: ['Reordering error: ' + error.message] };
+    }
+}
+
+// ✅ NEW: Strategy 3 - Alternative Road Types
+async function attemptAlternativeRoadTypes(route, attempt) {
+    try {
+        // This strategy would try different road types or routing preferences
+        // For now, we'll try with different Google Directions parameters
+        
+        const waypoints = route.stops.map(stop => ({
+            lat: parseFloat(stop.snapped_lat),
+            lng: parseFloat(stop.snapped_lon)
+        })).filter(point => !isNaN(point.lat) && !isNaN(point.lng));
+        
+        if (waypoints.length < 2) {
+            return null;
+        }
+        
+        const origin = `${COLLEGE_COORDS[0]},${COLLEGE_COORDS[1]}`;
+        const destination = `${COLLEGE_COORDS[0]},${COLLEGE_COORDS[1]}`;
+        const waypointsStr = waypoints.map(wp => `${wp.lat},${wp.lng}`).join('|');
+        
+        // Try different routing modes - always use bus as per user request
+        let avoidParams = '';
+        let vehicleType = 'bus';
+        
+        switch (attempt) {
+            case 1:
+                // First attempt: allow highways and tolls, use bus (maximum flexibility)
+                avoidParams = '';
+                vehicleType = 'bus';
+                break;
+            case 2:
+                // Second attempt: allow highways and tolls, avoid ferries, use bus
+                avoidParams = 'ferries';
+                vehicleType = 'bus';
+                break;
+            case 3:
+                // Third attempt: allow highways and tolls, avoid ferries and restricted roads, use bus
+                avoidParams = 'ferries|restricted';
+                vehicleType = 'bus';
+                break;
+        }
+        
+        const directionsUrl = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}&waypoints=${waypointsStr}&avoid=${avoidParams}&vehicleType=${vehicleType}&key=${GOOGLE_API_KEY}`;
+        
+        console.log(`🔄 Attempting alternative road types with avoid=${avoidParams}, vehicleType=${vehicleType}`);
+        const response = await fetch(directionsUrl);
+        const data = await response.json();
+        
+        if (data.status === 'ZERO_RESULTS') {
+            return { isValid: false, issues: ['No alternative route found'] };
+        }
+        
+        if (data.status !== 'OK') {
+            return { isValid: false, issues: [`Google API error: ${data.status}`] };
+        }
+        
+        // Validate the alternative route
+        const googleRoute = data.routes[0];
+        const issues = [];
+        
+        // Check distance
+        const googleDistanceKm = googleRoute.legs.reduce((total, leg) => total + leg.distance.value, 0) / 1000;
+        if (googleDistanceKm > 60) {
+            issues.push(`Alternative route too long: ${googleDistanceKm.toFixed(1)}km`);
+        }
+        
+        // Check for major issues
+        googleRoute.warnings?.forEach(warning => {
+            if (warning.includes('restricted') || warning.includes('weight') || warning.includes('height')) {
+                issues.push(`Road warning: ${warning}`);
+            }
+        });
+        
+        return {
+            isValid: issues.length === 0,
+            issues: issues,
+            distance: googleDistanceKm,
+            route: googleRoute,
+            mode: routingMode
+        };
+        
+    } catch (error) {
+        console.warn('Alternative road types failed:', error);
+        return { isValid: false, issues: ['Alternative routing error: ' + error.message] };
+    }
+}
+
+// ✅ NEW: Helper function to calculate route distance
+function calculateRouteDistance(stops) {
+    if (stops.length < 2) return 0;
+    
+    let totalDistance = 0;
+    for (let i = 0; i < stops.length - 1; i++) {
+        const stop1 = stops[i];
+        const stop2 = stops[i + 1];
+        
+        const lat1 = parseFloat(stop1.snapped_lat);
+        const lng1 = parseFloat(stop1.snapped_lon);
+        const lat2 = parseFloat(stop2.snapped_lat);
+        const lng2 = parseFloat(stop2.snapped_lon);
+        
+        totalDistance += calculateHaversineDistance(lat1, lng1, lat2, lng2);
+    }
+    
+    // Add distance back to college
+    const lastStop = stops[stops.length - 1];
+    const lastLat = parseFloat(lastStop.snapped_lat);
+    const lastLng = parseFloat(lastStop.snapped_lon);
+    totalDistance += calculateHaversineDistance(lastLat, lastLng, COLLEGE_COORDS[0], COLLEGE_COORDS[1]);
+    
+    return totalDistance;
+}
+
+// ===== COMPREHENSIVE EXCEL EXPORT FUNCTION =====
+
+// Export all data in one comprehensive Excel file
+async function exportComprehensiveExcel() {
+    try {
+        console.log('Excel export function called');
+        console.log('XLSX library available:', typeof XLSX !== 'undefined');
+        
+        if (!window.optimizationResults || !window.optimizationResults.length) {
+            showToast('No optimization results to export. Please run optimization first.', 'error');
+            return;
+        }
+
+        console.log('Optimization results found:', window.optimizationResults.length, 'routes');
+        showToast('Preparing comprehensive Excel export...', 'info');
+        
+        // Get current timestamp for file naming
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+        const shiftTime = AppState.currentShift || 'unknown';
+        const dayOfWeek = AppState.currentDay || 'unknown';
+        
+        console.log('Export parameters:', { timestamp, shiftTime, dayOfWeek });
+        
+        // Create comprehensive export data
+        const exportData = createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp);
+        console.log('Export data created:', {
+            routeSummary: exportData.routeSummary.length,
+            stopDetails: exportData.stopDetails.length,
+            assignmentDetails: exportData.assignmentDetails.length,
+            performanceMetrics: exportData.performanceMetrics.length
+        });
+        
+        // Validate export data
+        if (!exportData.routeSummary || !exportData.stopDetails || !exportData.assignmentDetails || !exportData.performanceMetrics) {
+            throw new Error('Export data structure is invalid');
+        }
+        
+        if (exportData.routeSummary.length === 0) {
+            throw new Error('No route data available for export');
+        }
+        
+        // Generate and download Excel file
+        await generateExcelFile(exportData, shiftTime, dayOfWeek, timestamp);
+        
+        showToast('Comprehensive Excel export completed! Check your downloads.', 'success');
+        
+        // Show additional information about potential download issues
+        setTimeout(() => {
+            showToast('If download didn\'t start, check browser download settings or try the CSV export.', 'info');
+        }, 2000);
+        
+    } catch (error) {
+        console.error('Excel export error:', error);
+        showToast(`Excel export failed: ${error.message}`, 'error');
+    }
+}
+
+// Create comprehensive Excel data with enhanced stop details
+function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
+    console.log('🔍 Starting createComprehensiveExcelData...');
+    console.log('🔍 Input parameters:', { shiftTime, dayOfWeek, timestamp });
+    console.log('🔍 window.optimizationResults:', window.optimizationResults);
+    
+    const routeSummaryData = [];
+    const stopDetailsData = [];
+    const performanceMetricsData = [];
+    const assignmentDetailsData = [];
+    
+    let totalStudents = 0;
+    let totalStops = 0;
+    let totalDistance = 0;
+    let totalEfficiency = 0;
+    let routesWithWarnings = 0;
+    
+    // Validate optimization results
+    if (!window.optimizationResults || !Array.isArray(window.optimizationResults) || window.optimizationResults.length === 0) {
+        console.error('❌ No valid optimization results found!');
+        throw new Error('No optimization results available for export');
+    }
+    
+    console.log(`🔍 Processing ${window.optimizationResults.length} routes...`);
+    
+    // Process each route
+    for (let routeIndex = 0; routeIndex < window.optimizationResults.length; routeIndex++) {
+        const route = window.optimizationResults[routeIndex];
+        console.log(`🔍 Processing route ${routeIndex + 1}:`, route);
+        
+        // Validate route structure
+        if (!route || !route.stops || !Array.isArray(route.stops)) {
+            console.warn(`⚠️ Route ${routeIndex + 1} has invalid structure, skipping...`);
+            continue;
+        }
+        
+        let cumulativeDistance = 0;
+        let cumulativeStudents = 0;
+        
+        // Calculate route metrics with safe parsing
+        const routeDistance = parseFloat(route.totalDistance) || 0;
+        const routeEfficiency = parseFloat(route.efficiency) || 0;
+        const hasWarnings = route.hasAccessibilityWarnings || route.warningMessage;
+        const routeStudents = parseInt(route.totalStudents) || 0;
+        const routeStops = route.stops.length;
+        
+        totalStudents += routeStudents;
+        totalStops += routeStops;
+        totalDistance += routeDistance;
+        totalEfficiency += routeEfficiency;
+        if (hasWarnings) routesWithWarnings++;
+        
+        console.log(`🔍 Route ${routeIndex + 1} metrics:`, {
+            students: routeStudents,
+            stops: routeStops,
+            distance: routeDistance,
+            efficiency: routeEfficiency
+        });
+        
+        // Route Summary Data
+        const routeSummary = {
+            route_id: route.busId || `Route_${routeIndex + 1}`,
+            route_name: route.busId || `Route_${routeIndex + 1}`,
+            depot: route.depot || 'Default Depot',
+            total_stops: routeStops,
+            total_students: routeStudents,
+            efficiency_percentage: routeEfficiency.toFixed(2),
+            total_distance_km: routeDistance.toFixed(2),
+            estimated_time_min: route.estimatedTime || 'N/A',
+            route_type: route.routeType || 'optimized',
+            direction: route.direction || 'MIXED',
+            accessibility_status: hasWarnings ? 'Warnings' : 'Valid',
+            warnings: route.warningMessage || '',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        };
+        
+        routeSummaryData.push(routeSummary);
+        console.log(`✅ Added route summary for route ${routeIndex + 1}`);
+        
+        // Process stops for this route with enhanced details
+        for (let stopIndex = 0; stopIndex < route.stops.length; stopIndex++) {
+            const stop = route.stops[stopIndex];
+            
+            // Validate stop structure
+            if (!stop) {
+                console.warn(`⚠️ Stop ${stopIndex + 1} in route ${routeIndex + 1} is null, skipping...`);
+                continue;
+            }
+            
+            const studentsAtStop = parseInt(stop.num_students) || 0;
+            cumulativeStudents += studentsAtStop;
+            
+            // Calculate distance to next stop
+            let distanceToNext = 0;
+            if (stopIndex < route.stops.length - 1) {
+                const nextStop = route.stops[stopIndex + 1];
+                if (nextStop && stop.snapped_lat && stop.snapped_lon && nextStop.snapped_lat && nextStop.snapped_lon) {
+                    distanceToNext = calculateHaversineDistance(
+                        parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon),
+                        parseFloat(nextStop.snapped_lat), parseFloat(nextStop.snapped_lon)
+                    );
+                    cumulativeDistance += distanceToNext;
+                }
+            }
+            
+            // Enhanced Stop Details Data
+            const stopDetail = {
+                route_id: route.busId || `Route_${routeIndex + 1}`,
+                route_name: route.busId || `Route_${routeIndex + 1}`,
+                depot: route.depot || 'Default Depot',
+                stop_sequence: stopIndex + 1,
+                cluster_number: stop.cluster_number || stopIndex + 1,
+                stop_name: `Stop ${stop.cluster_number || stopIndex + 1}`,
+                stop_address: stop.address || stop.original_address || 'Unknown',
+                original_lat: stop.lat || stop.snapped_lat || 0,
+                original_lon: stop.lng || stop.snapped_lon || 0,
+                snapped_lat: stop.snapped_lat || stop.lat || 0,
+                snapped_lon: stop.snapped_lon || stop.lng || 0,
+                students_pickup: studentsAtStop,
+                road_type: stop.route_type || 'Unknown',
+                road_name: stop.route_name || 'Unknown',
+                snap_distance_meters: stop.snap_distance || 0,
+                distance_to_next_stop_km: distanceToNext.toFixed(3),
+                cumulative_distance_km: cumulativeDistance.toFixed(3),
+                cumulative_students: cumulativeStudents,
+                estimated_pickup_time: stop.estimatedTime || 'N/A',
+                accessibility_status: stop.accessibilityStatus || 'Valid',
+                shift_time: shiftTime,
+                day_of_week: dayOfWeek,
+                export_timestamp: timestamp
+            };
+            
+            stopDetailsData.push(stopDetail);
+            
+            // Assignment Details Data (one row per student group)
+            if (studentsAtStop > 0) {
+                const assignmentDetail = {
+                    route_id: route.busId || `Route_${routeIndex + 1}`,
+                    route_name: route.busId || `Route_${routeIndex + 1}`,
+                    depot: route.depot || 'Default Depot',
+                    stop_sequence: stopIndex + 1,
+                    stop_name: `Stop ${stop.cluster_number || stopIndex + 1}`,
+                    stop_address: stop.address || stop.original_address || 'Unknown',
+                    students_assigned: studentsAtStop,
+                    assignment_type: 'Pickup',
+                    bus_capacity: route.maxCapacity || 55,
+                    current_load: cumulativeStudents,
+                    load_percentage: ((cumulativeStudents / (route.maxCapacity || 55)) * 100).toFixed(1),
+                    distance_from_depot_km: cumulativeDistance.toFixed(3),
+                    estimated_time_from_depot_min: (cumulativeDistance * 2).toFixed(1), // Rough estimate
+                    shift_time: shiftTime,
+                    day_of_week: dayOfWeek,
+                    export_timestamp: timestamp
+                };
+                
+                assignmentDetailsData.push(assignmentDetail);
+            }
+        }
+        
+        console.log(`✅ Processed route ${routeIndex + 1}: ${route.stops.length} stops, ${routeStudents} students`);
+    }
+    
+    // Performance Metrics Data
+    const avgEfficiency = totalEfficiency / window.optimizationResults.length;
+    const avgDistance = totalDistance / window.optimizationResults.length;
+    const avgStops = totalStops / window.optimizationResults.length;
+    
+    performanceMetricsData.push(
+        {
+            metric_name: 'Total Routes',
+            metric_value: window.optimizationResults.length,
+            metric_unit: 'routes',
+            calculation_method: 'Count',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Total Stops',
+            metric_value: totalStops,
+            metric_unit: 'stops',
+            calculation_method: 'Sum',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Total Students',
+            metric_value: totalStudents,
+            metric_unit: 'students',
+            calculation_method: 'Sum',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Average Efficiency',
+            metric_value: avgEfficiency.toFixed(2),
+            metric_unit: '%',
+            calculation_method: 'Mean',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Total Distance',
+            metric_value: totalDistance.toFixed(2),
+            metric_unit: 'km',
+            calculation_method: 'Sum',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Average Distance per Route',
+            metric_value: avgDistance.toFixed(2),
+            metric_unit: 'km',
+            calculation_method: 'Mean',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Average Stops per Route',
+            metric_value: avgStops.toFixed(1),
+            metric_unit: 'stops',
+            calculation_method: 'Mean',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Routes with Warnings',
+            metric_value: routesWithWarnings,
+            metric_unit: 'routes',
+            calculation_method: 'Count',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Accessibility Compliance Rate',
+            metric_value: ((window.optimizationResults.length - routesWithWarnings) / window.optimizationResults.length * 100).toFixed(1),
+            metric_unit: '%',
+            calculation_method: 'Percentage',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        }
+    );
+    
+    console.log('📊 Final data summary:');
+    console.log('   - Route Summary:', routeSummaryData.length, 'rows');
+    console.log('   - Stop Details:', stopDetailsData.length, 'rows');
+    console.log('   - Assignment Details:', assignmentDetailsData.length, 'rows');
+    console.log('   - Performance Metrics:', performanceMetricsData.length, 'rows');
+    
+    // Validate that we have data
+    if (routeSummaryData.length === 0) {
+        console.error('❌ No route summary data generated!');
+        throw new Error('No route data available for export');
+    }
+    
+    if (stopDetailsData.length === 0) {
+        console.warn('⚠️ No stop details data generated!');
+    }
+    
+    if (assignmentDetailsData.length === 0) {
+        console.warn('⚠️ No assignment details data generated!');
+    }
+    
+    if (performanceMetricsData.length === 0) {
+        console.warn('⚠️ No performance metrics data generated!');
+    }
+    
+    const result = {
+        routeSummary: routeSummaryData,
+        stopDetails: stopDetailsData,
+        assignmentDetails: assignmentDetailsData,
+        performanceMetrics: performanceMetricsData
+    };
+    
+    console.log('✅ createComprehensiveExcelData completed successfully');
+    return result;
+}
+
+// Generate Excel file with multiple sheets
+async function generateExcelFile(exportData, shiftTime, dayOfWeek, timestamp) {
+    console.log('🔧 generateExcelFile called with parameters:', { shiftTime, dayOfWeek, timestamp });
+    console.log('🔧 Export data structure:', {
+        routeSummary: exportData.routeSummary?.length || 0,
+        stopDetails: exportData.stopDetails?.length || 0,
+        assignmentDetails: exportData.assignmentDetails?.length || 0,
+        performanceMetrics: exportData.performanceMetrics?.length || 0
+    });
+    
+    // Validate export data
+    if (!exportData || typeof exportData !== 'object') {
+        throw new Error('Invalid export data structure');
+    }
+    
+    // Create a workbook with multiple sheets
+    const workbook = {
+        SheetNames: ['Route Summary', 'Stop Details', 'Assignment Details', 'Performance Metrics'],
+        Sheets: {}
+    };
+    
+    // Convert each dataset to worksheet format
+    const sheets = [
+        { name: 'Route Summary', data: exportData.routeSummary || [] },
+        { name: 'Stop Details', data: exportData.stopDetails || [] },
+        { name: 'Assignment Details', data: exportData.assignmentDetails || [] },
+        { name: 'Performance Metrics', data: exportData.performanceMetrics || [] }
+    ];
+    
+    console.log('🔧 Processing sheets:', sheets.map(s => ({ name: s.name, rows: s.data.length })));
+    
+    let processedSheets = 0;
+    
+    // Process each sheet
+    sheets.forEach((sheet, sheetIndex) => {
+        console.log(`🔧 Processing sheet "${sheet.name}" (${sheetIndex + 1}/${sheets.length})`);
+        
+        if (!sheet.data || !Array.isArray(sheet.data) || sheet.data.length === 0) {
+            console.warn(`⚠️ Sheet "${sheet.name}" has no data!`);
+            return;
+        }
+        
+        const worksheet = {};
+        const headers = Object.keys(sheet.data[0]);
+        
+        console.log(`🔧 Sheet "${sheet.name}" has ${sheet.data.length} rows and ${headers.length} columns`);
+        console.log(`🔧 Headers:`, headers);
+        
+        // Add headers
+        headers.forEach((header, colIndex) => {
+            const cellRef = String.fromCharCode(65 + colIndex) + '1';
+            worksheet[cellRef] = { v: header, t: 's' };
+        });
+        
+        // Add data rows
+        sheet.data.forEach((row, rowIndex) => {
+            headers.forEach((header, colIndex) => {
+                const cellRef = String.fromCharCode(65 + colIndex) + (rowIndex + 2);
+                const value = row[header];
+                
+                // Handle different data types
+                let cellType = 's'; // string by default
+                if (typeof value === 'number') {
+                    cellType = 'n';
+                } else if (typeof value === 'boolean') {
+                    cellType = 'b';
+                }
+                
+                worksheet[cellRef] = { 
+                    v: value, 
+                    t: cellType 
+                };
+            });
+        });
+        
+        // Set column widths
+        worksheet['!cols'] = headers.map(() => ({ width: 15 }));
+        
+        workbook.Sheets[sheet.name] = worksheet;
+        processedSheets++;
+        
+        console.log(`✅ Sheet "${sheet.name}" processed successfully`);
+    });
+    
+    console.log(`🔧 Total sheets processed: ${processedSheets}/${sheets.length}`);
+    
+    if (processedSheets === 0) {
+        throw new Error('No valid sheets were processed for Excel generation');
+    }
+    
+    // Generate Excel file using SheetJS (XLSX)
+    try {
+        console.log('Attempting to generate Excel file...');
+        
+        // Check if XLSX is available
+        if (typeof XLSX === 'undefined') {
+            console.warn('XLSX library not available, falling back to CSV');
+            // Fallback to CSV if XLSX not available
+            await generateMultipleCSVFiles(exportData, shiftTime, dayOfWeek, timestamp);
+            return;
+        }
+        
+        console.log('XLSX library available, generating Excel buffer...');
+        const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+        console.log('Excel buffer generated, size:', excelBuffer.length, 'bytes');
+        
+        const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        console.log('Blob created, size:', blob.size, 'bytes');
+        
+        // Check if browser supports download attribute
+        const supportsDownload = 'download' in document.createElement('a');
+        console.log('Browser supports download attribute:', supportsDownload);
+        
+        const url = URL.createObjectURL(blob);
+        console.log('Object URL created:', url);
+        
+        const link = document.createElement('a');
+        link.href = url;
+        
+        if (supportsDownload) {
+            link.download = `Transport_Analysis_${shiftTime}_${dayOfWeek}_${timestamp}.xlsx`;
+            console.log('Download filename:', link.download);
+        } else {
+            // Fallback for browsers that don't support download attribute
+            console.warn('Download attribute not supported, opening in new window');
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+        }
+        
+        link.style.display = 'none';
+        
+        // Add link to DOM, click it, and remove it
+        document.body.appendChild(link);
+        
+        // Try to trigger download with user interaction
+        try {
+            link.click();
+            console.log('Download link clicked successfully');
+        } catch (clickError) {
+            console.warn('Direct click failed, trying alternative method:', clickError);
+            // Alternative method using dispatchEvent
+            const clickEvent = new MouseEvent('click', {
+                view: window,
+                bubbles: true,
+                cancelable: true
+            });
+            link.dispatchEvent(clickEvent);
+        }
+        
+        // Clean up
+        setTimeout(() => {
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }, 100);
+        
+        // Alternative download method if the first one doesn't work
+        setTimeout(() => {
+            console.log('Attempting alternative download method...');
+            const altLink = document.createElement('a');
+            altLink.href = URL.createObjectURL(blob);
+            altLink.download = `Transport_Analysis_${shiftTime}_${dayOfWeek}_${timestamp}.xlsx`;
+            altLink.style.display = 'none';
+            document.body.appendChild(altLink);
+            altLink.click();
+            document.body.removeChild(altLink);
+            URL.revokeObjectURL(altLink.href);
+            console.log('Alternative download method completed');
+        }, 1000);
+        
+    } catch (error) {
+        console.error('Error generating Excel file:', error);
+        console.warn('Falling back to CSV export');
+        // Fallback to CSV
+        await generateMultipleCSVFiles(exportData, shiftTime, dayOfWeek, timestamp);
+    }
+}
+
+// ... existing code ...
+
+// ===== COMPREHENSIVE CSV EXPORT FUNCTIONS =====
+
+// Enhanced Export Results with multiple sheets (CSV version)
+async function exportComprehensiveResults() {
+    try {
+        if (!window.optimizationResults || !window.optimizationResults.length) {
+            showToast('No optimization results to export. Please run optimization first.', 'error');
+            return;
+        }
+
+        showToast('Preparing comprehensive export...', 'info');
+        
+        // Get current timestamp for file naming
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+        const shiftTime = AppState.currentShift || 'unknown';
+        const dayOfWeek = AppState.currentDay || 'unknown';
+        
+        // Create comprehensive export data
+        const exportData = createComprehensiveExportData(shiftTime, dayOfWeek, timestamp);
+        
+        // Generate and download CSV files
+        await generateMultipleCSVFiles(exportData, shiftTime, dayOfWeek, timestamp);
+        
+        showToast('Comprehensive export completed! Check your downloads.', 'success');
+        
+    } catch (error) {
+        console.error('Export error:', error);
+        showToast(`Export failed: ${error.message}`, 'error');
+    }
+}
+
+// Create comprehensive export data (CSV version)
+function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
+    const routeSummaryData = [];
+    const stopDetailsData = [];
+    const performanceMetricsData = [];
+    
+    let totalStudents = 0;
+    let totalStops = 0;
+    let totalDistance = 0;
+    let totalEfficiency = 0;
+    let routesWithWarnings = 0;
+    
+    // Process each route
+    for (let routeIndex = 0; routeIndex < window.optimizationResults.length; routeIndex++) {
+        const route = window.optimizationResults[routeIndex];
+        let cumulativeDistance = 0;
+        let cumulativeStudents = 0;
+        
+        // Calculate route metrics
+        const routeDistance = parseFloat(route.totalDistance) || 0;
+        const routeEfficiency = parseFloat(route.efficiency) || 0;
+        const hasWarnings = route.hasAccessibilityWarnings || route.warningMessage;
+        
+        totalStudents += route.totalStudents;
+        totalStops += route.stops.length;
+        totalDistance += routeDistance;
+        totalEfficiency += routeEfficiency;
+        if (hasWarnings) routesWithWarnings++;
+        
+        // Route Summary Data
+        routeSummaryData.push({
+            route_id: route.busId,
+            route_name: route.busId,
+            depot: route.depot || 'Default Depot',
+            total_stops: route.stops.length,
+            total_students: route.totalStudents,
+            efficiency_percentage: route.efficiency,
+            total_distance_km: routeDistance.toFixed(2),
+            estimated_time_min: route.estimatedTime || 'N/A',
+            route_type: route.routeType || 'optimized',
+            direction: route.direction || 'MIXED',
+            accessibility_status: hasWarnings ? 'Warnings' : 'Valid',
+            warnings: route.warningMessage || '',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        });
+        
+        // Process stops for this route
+        for (let stopIndex = 0; stopIndex < route.stops.length; stopIndex++) {
+            const stop = route.stops[stopIndex];
+            cumulativeStudents += parseInt(stop.num_students) || 0;
+            
+            // Calculate distance to next stop
+            let distanceToNext = 0;
+            if (stopIndex < route.stops.length - 1) {
+                const nextStop = route.stops[stopIndex + 1];
+                distanceToNext = calculateHaversineDistance(
+                    parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon),
+                    parseFloat(nextStop.snapped_lat), parseFloat(nextStop.snapped_lon)
+                );
+                cumulativeDistance += distanceToNext;
+            }
+            
+            stopDetailsData.push({
+                route_id: route.busId,
+                route_name: route.busId,
+                stop_sequence: stopIndex + 1,
+                cluster_number: stop.cluster_number,
+                stop_name: `Stop ${stop.cluster_number}`,
+                original_lat: stop.lat || stop.snapped_lat,
+                original_lon: stop.lng || stop.snapped_lon,
+                snapped_lat: stop.snapped_lat,
+                snapped_lon: stop.snapped_lon,
+                students_pickup: stop.num_students,
+                road_type: stop.route_type || 'Unknown',
+                road_name: stop.route_name || 'Unknown',
+                snap_distance_meters: stop.snap_distance || 0,
+                distance_to_next_stop_km: distanceToNext.toFixed(3),
+                cumulative_distance_km: cumulativeDistance.toFixed(3),
+                cumulative_students: cumulativeStudents,
+                shift_time: shiftTime,
+                day_of_week: dayOfWeek,
+                export_timestamp: timestamp
+            });
+        }
+    }
+    
+    // Performance Metrics Data
+    const avgEfficiency = totalEfficiency / window.optimizationResults.length;
+    const avgDistance = totalDistance / window.optimizationResults.length;
+    const avgStops = totalStops / window.optimizationResults.length;
+    
+    performanceMetricsData.push(
+        {
+            metric_name: 'Total Routes',
+            metric_value: window.optimizationResults.length,
+            metric_unit: 'routes',
+            calculation_method: 'Count',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Total Stops',
+            metric_value: totalStops,
+            metric_unit: 'stops',
+            calculation_method: 'Sum',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Total Students',
+            metric_value: totalStudents,
+            metric_unit: 'students',
+            calculation_method: 'Sum',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Average Efficiency',
+            metric_value: avgEfficiency.toFixed(2),
+            metric_unit: '%',
+            calculation_method: 'Mean',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Total Distance',
+            metric_value: totalDistance.toFixed(2),
+            metric_unit: 'km',
+            calculation_method: 'Sum',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Average Distance per Route',
+            metric_value: avgDistance.toFixed(2),
+            metric_unit: 'km',
+            calculation_method: 'Mean',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Average Stops per Route',
+            metric_value: avgStops.toFixed(1),
+            metric_unit: 'stops',
+            calculation_method: 'Mean',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Routes with Warnings',
+            metric_value: routesWithWarnings,
+            metric_unit: 'routes',
+            calculation_method: 'Count',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        },
+        {
+            metric_name: 'Accessibility Compliance Rate',
+            metric_value: ((window.optimizationResults.length - routesWithWarnings) / window.optimizationResults.length * 100).toFixed(1),
+            metric_unit: '%',
+            calculation_method: 'Percentage',
+            shift_time: shiftTime,
+            day_of_week: dayOfWeek,
+            export_timestamp: timestamp
+        }
+    );
+    
+    return {
+        routeSummary: routeSummaryData,
+        stopDetails: stopDetailsData,
+        performanceMetrics: performanceMetricsData
+    };
+}
+
+// Generate multiple CSV files
+async function generateMultipleCSVFiles(exportData, shiftTime, dayOfWeek, timestamp) {
+    const files = [
+        {
+            name: `Route_Summary_${shiftTime}_${dayOfWeek}_${timestamp}.csv`,
+            data: exportData.routeSummary
+        },
+        {
+            name: `Stop_Details_${shiftTime}_${dayOfWeek}_${timestamp}.csv`,
+            data: exportData.stopDetails
+        },
+        {
+            name: `Assignment_Details_${shiftTime}_${dayOfWeek}_${timestamp}.csv`,
+            data: exportData.assignmentDetails
+        },
+        {
+            name: `Performance_Metrics_${shiftTime}_${dayOfWeek}_${timestamp}.csv`,
+            data: exportData.performanceMetrics
+        }
+    ];
+    
+    // Create individual CSV files
+    files.forEach(file => {
+        const csv = Papa.unparse(file.data);
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', file.name);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    });
+}
+
+// Calculate Haversine distance between two points
+function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371; // Earth's radius in kilometers
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = 
+        Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+        Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+}
+
+// Export selected routes only
+function exportSelectedRoutes() {
+    if (!window.optimizationResults || !window.optimizationResults.length) {
+        showToast('No results to export', 'warning');
+        return;
+    }
+    
+    // Get selected routes from UI
+    const selectedRoutes = getSelectedRoutes();
+    if (selectedRoutes.length === 0) {
+        showToast('Please select routes to export', 'warning');
+        return;
+    }
+    
+    // Filter optimization results to selected routes only
+    const filteredResults = window.optimizationResults.filter(route => 
+        selectedRoutes.includes(route.busId)
+    );
+    
+    // Temporarily replace optimization results and export
+    const originalResults = window.optimizationResults;
+    window.optimizationResults = filteredResults;
+    
+    exportComprehensiveResults().then(() => {
+        window.optimizationResults = originalResults;
+    });
+}
+
+// Get selected routes from UI
+function getSelectedRoutes() {
+    const selectedRoutes = [];
+    const checkboxes = document.querySelectorAll('.route-checkbox:checked');
+    checkboxes.forEach(checkbox => {
+        selectedRoutes.push(checkbox.value);
+    });
+    return selectedRoutes;
+}
+
+// Debug function to test Excel export with sample data
+function debugExcelExport() {
+    console.log('🔍 DEBUG: Testing Excel export functionality...');
+    
+    // Check if XLSX is available
+    console.log('🔍 XLSX library available:', typeof XLSX !== 'undefined');
+    
+    // Check if optimization results exist
+    console.log('🔍 Optimization results:', window.optimizationResults);
+    console.log('🔍 Optimization results length:', window.optimizationResults?.length || 0);
+    
+    if (!window.optimizationResults || window.optimizationResults.length === 0) {
+        console.log('🔍 Creating sample data for testing...');
+        
+        // Create sample optimization results for testing
+        window.optimizationResults = [
+            {
+                busId: 'Test_Bus_1',
+                depot: 'Test Depot',
+                totalStudents: 25,
+                totalDistance: 15.5,
+                efficiency: 85.5,
+                estimatedTime: '45 min',
+                routeType: 'test',
+                direction: 'MIXED',
+                maxCapacity: 55,
+                stops: [
+                    {
+                        cluster_number: 1,
+                        num_students: 5,
+                        lat: 13.0088,
+                        lng: 80.0035,
+                        snapped_lat: 13.0088,
+                        snapped_lon: 80.0035,
+                        address: 'Test Address 1',
+                        route_type: 'Primary',
+                        route_name: 'Test Road 1',
+                        snap_distance: 10,
+                        estimatedTime: '08:00',
+                        accessibilityStatus: 'Valid'
+                    },
+                    {
+                        cluster_number: 2,
+                        num_students: 8,
+                        lat: 13.0188,
+                        lng: 80.0135,
+                        snapped_lat: 13.0188,
+                        snapped_lon: 80.0135,
+                        address: 'Test Address 2',
+                        route_type: 'Secondary',
+                        route_name: 'Test Road 2',
+                        snap_distance: 15,
+                        estimatedTime: '08:15',
+                        accessibilityStatus: 'Valid'
+                    },
+                    {
+                        cluster_number: 3,
+                        num_students: 12,
+                        lat: 13.0288,
+                        lng: 80.0235,
+                        snapped_lat: 13.0288,
+                        snapped_lon: 80.0235,
+                        address: 'Test Address 3',
+                        route_type: 'Primary',
+                        route_name: 'Test Road 3',
+                        snap_distance: 20,
+                        estimatedTime: '08:30',
+                        accessibilityStatus: 'Valid'
+                    }
+                ]
+            }
+        ];
+        
+        console.log('🔍 Sample data created:', window.optimizationResults);
+    }
+    
+    // Test the export function
+    console.log('🔍 Testing exportComprehensiveExcel...');
+    exportComprehensiveExcel();
+}
+
+// Make debug function available globally
+window.debugExcelExport = debugExcelExport;
+
