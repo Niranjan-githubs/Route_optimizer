@@ -2589,14 +2589,26 @@ async function drawPrimaryRoadRouteFromSequence(route, color, index, depot) {
             return;
         }
 
-        // Draw each segment with Google proxy first, OSRM as fallback
+        // Draw each segment with Google proxy first, OSRM as fallback, straight line as last resort
         for (let i = 0; i < sequence.length - 1; i++) {
             try {
                 const path = await getRoadPath(sequence[i], sequence[i + 1]);
                 if (!path || path.length < 2) {
-                    console.warn(`⚠️ No road path for segment ${i} of route ${index + 1}; skipping draw`);
-                    // small delay before next attempt
-                    await new Promise(r => setTimeout(r, 150));
+                    console.warn(`⚠️ No road path for segment ${i} of route ${index + 1}; using straight line fallback`);
+                    // Create straight line fallback
+                    const straightPath = [sequence[i], sequence[i + 1]];
+                    const seg = new google.maps.Polyline({
+                        path: straightPath,
+                        geodesic: true,
+                        strokeColor: color,
+                        strokeOpacity: 0.6,
+                        strokeWeight: 3,
+                        map: AppState.map
+                    });
+                    if (!AppState.routePolylinesByRoute[index]) AppState.routePolylinesByRoute[index] = [];
+                    AppState.routePolylinesByRoute[index].push(seg);
+                    seg.addListener('click', () => showRouteInfo(route, index));
+                    await new Promise(r => setTimeout(r, 100));
                     continue;
                 }
                 const seg = new google.maps.Polyline({
@@ -2613,8 +2625,20 @@ async function drawPrimaryRoadRouteFromSequence(route, color, index, depot) {
                 await new Promise(r => setTimeout(r, 150));
             } catch (segErr) {
                 console.warn(`⚠️ Segment draw failed for route ${index + 1}, segment ${i}:`, segErr);
-                // Do not draw straight fallback; move on
-                await new Promise(r => setTimeout(r, 200));
+                // Create straight line fallback
+                const straightPath = [sequence[i], sequence[i + 1]];
+                const seg = new google.maps.Polyline({
+                    path: straightPath,
+                    geodesic: true,
+                    strokeColor: color,
+                    strokeOpacity: 0.6,
+                    strokeWeight: 3,
+                    map: AppState.map
+                });
+                if (!AppState.routePolylinesByRoute[index]) AppState.routePolylinesByRoute[index] = [];
+                AppState.routePolylinesByRoute[index].push(seg);
+                seg.addListener('click', () => showRouteInfo(route, index));
+                await new Promise(r => setTimeout(r, 100));
             }
         }
 
@@ -2710,13 +2734,31 @@ async function getRoadPath(origin, destination) {
     try {
         const coords = `${origin.lng},${origin.lat};${destination.lng},${destination.lat}`;
         const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
-        const res = await fetch(url);
-        if (!res.ok) return null;
+        console.log(`🔄 OSRM URL: ${url}`);
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+        
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        
+        if (!res.ok) {
+            console.warn(`❌ OSRM API failed: ${res.status} ${res.statusText}`);
+            return null;
+        }
         const data = await res.json();
         const line = data?.routes?.[0]?.geometry?.coordinates;
-        if (!line) return null;
+        if (!line) {
+            console.warn(`❌ No route geometry from OSRM`);
+            return null;
+        }
         return line.map(([lng, lat]) => ({ lat, lng }));
     } catch (e) {
+        if (e.name === 'AbortError') {
+            console.warn(`⏱️ OSRM timeout for coordinates: ${origin.lng},${origin.lat} -> ${destination.lng},${destination.lat}`);
+        } else {
+            console.warn(`❌ OSRM error:`, e);
+        }
         return null;
     }
 }
@@ -5009,10 +5051,31 @@ async function callGoogleRouteOptimization(requestData) {
 async function optimizeWithGoogleAPI() {
     try {
         console.log('🎯 Starting enhanced route optimization with multi-strategy approach...');
+
+        async function loadGPSData() {
+            try {
+                const response = await fetch('js/combined_data.csv');
+                const csvData = await response.text();
+                return csvData;
+            } catch (error) {
+                console.error('Failed to load GPS data:', error);
+                return null;
+            }
+        }
         
         // Use the new getBusOptimizedRoutes function instead of the old approach
-        const optimizedRoutes = await getBusOptimizedRoutes();
-        
+        //const optimizedRoutes = await optimizeWithNetworkConstraints(csvData)
+
+        async function optimizeWithGPSConstraints() {
+            const csvData = await loadGPSData();
+            if (csvData) {
+                return await optimizeWithNetworkConstraints(csvData);
+            } else {
+                // Fallback to existing algorithm
+                console.log("!! fall back to algo without jtrack data !!!")
+                return await getBusOptimizedRoutes();
+            }
+        }
         if (!optimizedRoutes || optimizedRoutes.length === 0) {
             throw new Error('No valid routes generated');
         }

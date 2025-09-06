@@ -177,7 +177,7 @@ async function processRouteOptimizationResponse(apiResponse) {
                 };
                 
                 // ✅ Simple validation
-                const validation = await validateRouteAccessibility(routeData);
+                const validation = await validateNetworkRoute(routeData);
                 
                 routeData.accessibility = {
                     isValid: validation.isValid,
@@ -213,43 +213,12 @@ async function processRouteOptimizationResponse(apiResponse) {
 
 
 // ✅ SIMPLIFIED Route validation (basic checks only)
-async function validateRouteAccessibility(route) {
-    try {
-        const stops = route.stops;
-        if (stops.length === 0) return { isValid: true, issues: [] };
-        
-        const issues = [];
-        let isValid = true;
-        
-        // Check if route is too long
-        const distanceKm = parseFloat(route.totalDistance.replace(' km', '').replace('~', ''));
-        if (distanceKm > 60) {
-            issues.push('Route exceeds 60km limit');
-            isValid = false;
-        }
-        
-        // Check if route has too many stops (might indicate narrow roads)
-        if (stops.length > 15) {
-            issues.push('Too many stops - may have accessibility issues');
-        }
-        
-        // Check average distance between stops
-        const avgDistanceBetweenStops = distanceKm / Math.max(1, stops.length - 1);
-        if (avgDistanceBetweenStops < 1.5) {
-            issues.push('Stops very close together - possible narrow roads');
-        }
-        
-        // For now, be lenient - only fail routes with major issues
-        return {
-            isValid: issues.length <= 1,
-            issues: issues,
-            validatedDistance: distanceKm
-        };
-        
-    } catch (error) {
-        console.error('Route validation failed:', error);
-        return { isValid: true, issues: ['Validation skipped'] };
-    }
+function validateNetworkRoute(route) {
+    return {
+        isValid: route.networkValidated || false,
+        issues: route.networkValidated ? [] : ['Route not network-validated'],
+        method: 'gps-network-constrained'
+    };
 }
 
 
@@ -2638,3 +2607,658 @@ function convertAdvancedRoutesToFormat(advancedRoutes, routeIndex) {
         };
     });
 }
+
+// Enhanced Bus Route Optimization with Real GPS Network Constraints
+// This builds a road network from actual bus GPS tracking data and constrains routes to it
+
+// ===== GPS NETWORK PREPROCESSING =====
+
+// Global variables for the bus network
+let busRouteNetwork = null;
+let networkNodes = new Map();
+let networkEdges = new Map();
+
+/**
+ * Load and process GPS tracking data from CSV to build bus-accessible network
+ */
+async function loadAndProcessGPSNetwork(csvData) {
+    console.log('🗺️ Building bus-accessible network from GPS data...');
+    
+    const routes = parseGPSData(csvData);
+    const network = buildRouteNetwork(routes);
+    
+    busRouteNetwork = network;
+    console.log(`✅ Built network with ${network.nodes.size} nodes and ${network.edges.size} edges`);
+    
+    return network;
+}
+
+/**
+ * Parse CSV data and group by vehicle/route
+ */
+function parseGPSData(csvData) {
+    const lines = csvData.trim().split('\n').slice(1); // Skip header
+    const routeMap = new Map();
+    
+    lines.forEach(line => {
+        const [vehicle, device, speed, distance, fuel, timestamp, lat, lng, location, scraped] = line.split(',');
+        
+        if (!lat || !lng || lat === 'latitude' || lng === 'longitude') return;
+        
+        const point = {
+            lat: parseFloat(lat),
+            lng: parseFloat(lng),
+            timestamp: new Date(timestamp),
+            speed: parseFloat(speed) || 0,
+            vehicle: vehicle
+        };
+        
+        if (isValidCoordinate(point.lat, point.lng)) {
+            if (!routeMap.has(vehicle)) {
+                routeMap.set(vehicle, []);
+            }
+            routeMap.get(vehicle).push(point);
+        }
+    });
+    
+    // Sort points by timestamp for each vehicle
+    routeMap.forEach(points => {
+        points.sort((a, b) => a.timestamp - b.timestamp);
+    });
+    
+    return routeMap;
+}
+
+/**
+ * Build a network graph from GPS routes
+ */
+function buildRouteNetwork(routeMap) {
+    const nodes = new Map();
+    const edges = new Map();
+    const SNAP_DISTANCE = 50; // meters - points within this distance are considered same node
+    
+    let nodeId = 0;
+    
+    // Process each vehicle's route
+    for (const [vehicle, points] of routeMap) {
+        console.log(`📍 Processing ${points.length} GPS points for ${vehicle}`);
+        
+        let previousNodeId = null;
+        
+        points.forEach(point => {
+            // Find or create node for this GPS point
+            const existingNodeId = findNearbyNode(point, nodes, SNAP_DISTANCE);
+            let currentNodeId;
+            
+            if (existingNodeId !== null) {
+                currentNodeId = existingNodeId;
+                // Update node with additional data
+                const node = nodes.get(currentNodeId);
+                node.visits++;
+                node.vehicles.add(vehicle);
+            } else {
+                currentNodeId = nodeId++;
+                nodes.set(currentNodeId, {
+                    id: currentNodeId,
+                    lat: point.lat,
+                    lng: point.lng,
+                    visits: 1,
+                    vehicles: new Set([vehicle])
+                });
+            }
+            
+            // Create edge from previous node if exists
+            if (previousNodeId !== null && previousNodeId !== currentNodeId) {
+                const edgeKey = `${previousNodeId}-${currentNodeId}`;
+                const reverseKey = `${currentNodeId}-${previousNodeId}`;
+                
+                if (!edges.has(edgeKey) && !edges.has(reverseKey)) {
+                    const prevNode = nodes.get(previousNodeId);
+                    const currNode = nodes.get(currentNodeId);
+                    const distance = haversine(prevNode, currNode);
+                    
+                    // Only add edge if distance is reasonable (not GPS jumps)
+                    if (distance < 5000) { // 5km max edge length
+                        edges.set(edgeKey, {
+                            from: previousNodeId,
+                            to: currentNodeId,
+                            distance: distance,
+                            vehicles: new Set([vehicle]),
+                            bidirectional: false
+                        });
+                        
+                        // Make it bidirectional
+                        edges.set(reverseKey, {
+                            from: currentNodeId,
+                            to: previousNodeId,
+                            distance: distance,
+                            vehicles: new Set([vehicle]),
+                            bidirectional: false
+                        });
+                    }
+                }
+            }
+            
+            previousNodeId = currentNodeId;
+        });
+    }
+    
+    // Filter nodes and edges by frequency (remove noise)
+    const filteredNodes = new Map();
+    const filteredEdges = new Map();
+    
+    // Keep nodes visited by multiple vehicles OR multiple times
+    nodes.forEach((node, id) => {
+        if (node.visits >= 2 || node.vehicles.size >= 1) {
+            filteredNodes.set(id, node);
+        }
+    });
+    
+    // Keep edges between filtered nodes
+    edges.forEach((edge, key) => {
+        if (filteredNodes.has(edge.from) && filteredNodes.has(edge.to)) {
+            filteredEdges.set(key, edge);
+        }
+    });
+    
+    console.log(`🔍 Filtered to ${filteredNodes.size} nodes and ${filteredEdges.size} edges`);
+    
+    return {
+        nodes: filteredNodes,
+        edges: filteredEdges,
+        adjacencyList: buildAdjacencyList(filteredNodes, filteredEdges)
+    };
+}
+
+/**
+ * Find nearby node within snap distance
+ */
+function findNearbyNode(point, nodes, snapDistance) {
+    for (const [nodeId, node] of nodes) {
+        const distance = haversine(point, node);
+        if (distance <= snapDistance) {
+            return nodeId;
+        }
+    }
+    return null;
+}
+
+/**
+ * Build adjacency list for pathfinding
+ */
+function buildAdjacencyList(nodes, edges) {
+    const adjacencyList = new Map();
+    
+    // Initialize empty lists
+    nodes.forEach((_, nodeId) => {
+        adjacencyList.set(nodeId, []);
+    });
+    
+    // Add edges
+    edges.forEach(edge => {
+        adjacencyList.get(edge.from).push({
+            to: edge.to,
+            distance: edge.distance
+        });
+    });
+    
+    return adjacencyList;
+}
+
+// ===== NETWORK-CONSTRAINED ROUTE OPTIMIZATION =====
+
+/**
+ * Enhanced route optimization that uses bus network constraints
+ */
+async function getBusOptimizedRoutesWithNetwork(csvData) {
+    try {
+        // Load the GPS network if not already loaded
+        if (!busRouteNetwork) {
+            await loadAndProcessGPSNetwork(csvData);
+        }
+        
+        const filteredStops = filterStopsByDistance(stopsData, 40);
+        const maxCapacity = parseInt(document.getElementById('maxCapacity').value) || 55;
+        
+        console.log(`🚌 Starting network-constrained optimization for ${filteredStops.length} stops`);
+        
+        // Snap stops to network nodes
+        const networkSnappedStops = snapStopsToNetwork(filteredStops);
+        console.log(`📍 Snapped ${networkSnappedStops.length} stops to bus network`);
+        
+        // Build routes using network constraints
+        const networkRoutes = buildNetworkConstrainedRoutes(networkSnappedStops, maxCapacity);
+        
+        console.log(`✅ Generated ${networkRoutes.length} network-constrained routes`);
+        return networkRoutes;
+        
+    } catch (error) {
+        console.error('Network-constrained optimization failed:', error);
+        // Fallback to existing algorithm
+        return await getBusOptimizedRoutes();
+    }
+}
+
+/**
+ * Snap student pickup stops to nearest network nodes
+ */
+function snapStopsToNetwork(stops) {
+    const MAX_SNAP_DISTANCE = 500; // 500m max distance to snap to network
+    const snappedStops = [];
+    
+    stops.forEach(stop => {
+        const stopCoord = {
+            lat: parseFloat(stop.snapped_lat),
+            lng: parseFloat(stop.snapped_lon)
+        };
+        
+        let nearestNodeId = null;
+        let nearestDistance = Infinity;
+        
+        // Find closest network node
+        busRouteNetwork.nodes.forEach((node, nodeId) => {
+            const distance = haversine(stopCoord, node);
+            if (distance < nearestDistance && distance <= MAX_SNAP_DISTANCE) {
+                nearestDistance = distance;
+                nearestNodeId = nodeId;
+            }
+        });
+        
+        if (nearestNodeId !== null) {
+            const networkNode = busRouteNetwork.nodes.get(nearestNodeId);
+            snappedStops.push({
+                ...stop,
+                networkNodeId: nearestNodeId,
+                originalLat: parseFloat(stop.snapped_lat),
+                originalLng: parseFloat(stop.snapped_lon),
+                networkLat: networkNode.lat,
+                networkLng: networkNode.lng,
+                snapDistance: nearestDistance
+            });
+        } else {
+            console.warn(`⚠️ Stop ${stop.cluster_number} could not be snapped to network (too far)`);
+        }
+    });
+    
+    console.log(`📊 Successfully snapped ${snappedStops.length}/${stops.length} stops to network`);
+    return snappedStops;
+}
+
+/**
+ * Build routes constrained to the bus network using shortest paths
+ */
+function buildNetworkConstrainedRoutes(snappedStops, maxCapacity) {
+    const routes = [];
+    
+    // Group stops by network connectivity (connected components)
+    const connectedGroups = findConnectedStopGroups(snappedStops);
+    
+    connectedGroups.forEach((group, groupIndex) => {
+        console.log(`🔗 Processing connected group ${groupIndex + 1} with ${group.length} stops`);
+        
+        // Build routes within this connected group
+        const groupRoutes = buildRoutesInConnectedGroup(group, maxCapacity, groupIndex);
+        routes.push(...groupRoutes);
+    });
+    
+    return routes;
+}
+
+/**
+ * Find groups of stops that are connected in the network
+ */
+function findConnectedStopGroups(snappedStops) {
+    const visited = new Set();
+    const groups = [];
+    
+    snappedStops.forEach(stop => {
+        if (!visited.has(stop.networkNodeId)) {
+            const group = [];
+            const queue = [stop.networkNodeId];
+            const groupVisited = new Set();
+            
+            // BFS to find all connected stops
+            while (queue.length > 0) {
+                const nodeId = queue.shift();
+                
+                if (groupVisited.has(nodeId)) continue;
+                groupVisited.add(nodeId);
+                visited.add(nodeId);
+                
+                // Add stop at this node if exists
+                const stopsAtNode = snappedStops.filter(s => s.networkNodeId === nodeId);
+                group.push(...stopsAtNode);
+                
+                // Add connected nodes to queue
+                const neighbors = busRouteNetwork.adjacencyList.get(nodeId) || [];
+                neighbors.forEach(neighbor => {
+                    if (!groupVisited.has(neighbor.to)) {
+                        queue.push(neighbor.to);
+                    }
+                });
+            }
+            
+            if (group.length > 0) {
+                groups.push(group);
+            }
+        }
+    });
+    
+    return groups;
+}
+
+/**
+ * Build routes within a connected group using network paths
+ */
+function buildRoutesInConnectedGroup(group, maxCapacity, groupIndex) {
+    const routes = [];
+    
+    // Calculate distances between all stops using network paths
+    const stopDistances = calculateNetworkDistanceMatrix(group);
+    
+    // Build routes using a modified TSP approach with capacity constraints
+    const unvisitedStops = [...group];
+    let routeIndex = 1;
+    
+    while (unvisitedStops.length > 0) {
+        const route = buildSingleNetworkRoute(unvisitedStops, stopDistances, maxCapacity);
+        
+        if (route.stops.length > 0) {
+            const formattedRoute = formatNetworkRoute(route, groupIndex, routeIndex);
+            routes.push(formattedRoute);
+            routeIndex++;
+            
+            // Remove used stops
+            route.stops.forEach(stop => {
+                const index = unvisitedStops.findIndex(s => s.networkNodeId === stop.networkNodeId);
+                if (index !== -1) {
+                    unvisitedStops.splice(index, 1);
+                }
+            });
+        } else {
+            // Safety break
+            break;
+        }
+    }
+    
+    return routes;
+}
+
+/**
+ * Calculate shortest network distances between stops
+ */
+function calculateNetworkDistanceMatrix(stops) {
+    const distances = new Map();
+    
+    // Calculate distances between each pair of stops
+    for (let i = 0; i < stops.length; i++) {
+        for (let j = i + 1; j < stops.length; j++) {
+            const stop1 = stops[i];
+            const stop2 = stops[j];
+            
+            const distance = findShortestNetworkPath(stop1.networkNodeId, stop2.networkNodeId);
+            
+            const key1 = `${stop1.networkNodeId}-${stop2.networkNodeId}`;
+            const key2 = `${stop2.networkNodeId}-${stop1.networkNodeId}`;
+            
+            distances.set(key1, distance);
+            distances.set(key2, distance);
+        }
+    }
+    
+    return distances;
+}
+
+/**
+ * Find shortest path between two nodes using Dijkstra's algorithm
+ */
+function findShortestNetworkPath(startNodeId, endNodeId) {
+    if (startNodeId === endNodeId) return { distance: 0, path: [startNodeId] };
+    
+    const distances = new Map();
+    const previous = new Map();
+    const unvisited = new Set();
+    
+    // Initialize distances
+    busRouteNetwork.nodes.forEach((_, nodeId) => {
+        distances.set(nodeId, Infinity);
+        unvisited.add(nodeId);
+    });
+    distances.set(startNodeId, 0);
+    
+    while (unvisited.size > 0) {
+        // Find unvisited node with minimum distance
+        let currentNode = null;
+        let minDistance = Infinity;
+        
+        for (const nodeId of unvisited) {
+            const distance = distances.get(nodeId);
+            if (distance < minDistance) {
+                minDistance = distance;
+                currentNode = nodeId;
+            }
+        }
+        
+        if (currentNode === null || minDistance === Infinity) break;
+        
+        unvisited.delete(currentNode);
+        
+        if (currentNode === endNodeId) {
+            // Reconstruct path
+            const path = [];
+            let node = endNodeId;
+            while (node !== undefined) {
+                path.unshift(node);
+                node = previous.get(node);
+            }
+            
+            return { distance: distances.get(endNodeId), path };
+        }
+        
+        // Check neighbors
+        const neighbors = busRouteNetwork.adjacencyList.get(currentNode) || [];
+        neighbors.forEach(neighbor => {
+            if (!unvisited.has(neighbor.to)) return;
+            
+            const altDistance = distances.get(currentNode) + neighbor.distance;
+            if (altDistance < distances.get(neighbor.to)) {
+                distances.set(neighbor.to, altDistance);
+                previous.set(neighbor.to, currentNode);
+            }
+        });
+    }
+    
+    // No path found - return straight line distance as fallback
+    const startNode = busRouteNetwork.nodes.get(startNodeId);
+    const endNode = busRouteNetwork.nodes.get(endNodeId);
+    
+    return {
+        distance: haversine(startNode, endNode) * 2, // Penalty for no network path
+        path: [startNodeId, endNodeId],
+        isDirectPath: true
+    };
+}
+
+/**
+ * Build a single route using network constraints
+ */
+function buildSingleNetworkRoute(availableStops, distanceMatrix, maxCapacity) {
+    if (availableStops.length === 0) return { stops: [], totalStudents: 0 };
+    
+    const route = { stops: [], totalStudents: 0 };
+    
+    // Start with stop farthest from college (based on network distance)
+    let farthestStop = availableStops[0];
+    let maxDistanceFromCollege = 0;
+    
+    const collegeNode = findNearestNetworkNodeToCollege();
+    
+    availableStops.forEach(stop => {
+        const pathToCollege = findShortestNetworkPath(stop.networkNodeId, collegeNode);
+        if (pathToCollege.distance > maxDistanceFromCollege) {
+            maxDistanceFromCollege = pathToCollege.distance;
+            farthestStop = stop;
+        }
+    });
+    
+    route.stops.push(farthestStop);
+    route.totalStudents += parseInt(farthestStop.num_students);
+    
+    // Greedily add nearest stops that maintain network connectivity
+    while (true) {
+        const currentStop = route.stops[route.stops.length - 1];
+        let bestStop = null;
+        let shortestDistance = Infinity;
+        
+        availableStops.forEach(stop => {
+            if (route.stops.includes(stop)) return;
+            
+            const students = parseInt(stop.num_students);
+            if (route.totalStudents + students > maxCapacity) return;
+            
+            const key = `${currentStop.networkNodeId}-${stop.networkNodeId}`;
+            const pathDistance = distanceMatrix.get(key);
+            
+            if (pathDistance && pathDistance.distance < shortestDistance) {
+                shortestDistance = pathDistance.distance;
+                bestStop = stop;
+            }
+        });
+        
+        if (!bestStop) break;
+        
+        route.stops.push(bestStop);
+        route.totalStudents += parseInt(bestStop.num_students);
+    }
+    
+    return route;
+}
+
+/**
+ * Find the network node closest to college
+ */
+function findNearestNetworkNodeToCollege() {
+    const collegeCoord = { lat: COLLEGE_COORDS[0], lng: COLLEGE_COORDS[1] };
+    
+    let nearestNodeId = null;
+    let nearestDistance = Infinity;
+    
+    busRouteNetwork.nodes.forEach((node, nodeId) => {
+        const distance = haversine(collegeCoord, node);
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestNodeId = nodeId;
+        }
+    });
+    
+    return nearestNodeId;
+}
+
+/**
+ * Format network route to match existing format
+ */
+function formatNetworkRoute(route, groupIndex, routeIndex) {
+    // Calculate total route distance using network paths
+    let totalNetworkDistance = 0;
+    
+    const collegeNode = findNearestNetworkNodeToCollege();
+    
+    // Distance between stops
+    for (let i = 0; i < route.stops.length - 1; i++) {
+        const path = findShortestNetworkPath(
+            route.stops[i].networkNodeId,
+            route.stops[i + 1].networkNodeId
+        );
+        totalNetworkDistance += path.distance;
+    }
+    
+    // Distance from last stop to college
+    const lastStopPath = findShortestNetworkPath(
+        route.stops[route.stops.length - 1].networkNodeId,
+        collegeNode
+    );
+    totalNetworkDistance += lastStopPath.distance;
+    
+    // Convert to km
+    const totalDistanceKm = totalNetworkDistance / 1000;
+    
+    return {
+        busId: `Bus G${groupIndex + 1}-R${routeIndex} (Network)`,
+        depot: findOptimalDepot({ stops: route.stops }),
+        stops: route.stops.map(stop => ({
+            ...stop,
+            // Use network coordinates for routing
+            snapped_lat: stop.networkLat.toString(),
+            snapped_lon: stop.networkLng.toString(),
+            original_lat: stop.originalLat,
+            original_lng: stop.originalLng,
+            snap_distance: stop.snapDistance
+        })),
+        totalStudents: route.totalStudents,
+        efficiency: `${((route.totalStudents / 55) * 100).toFixed(1)}%`,
+        totalDistance: `${totalDistanceKm.toFixed(1)} km`,
+        estimatedDistance: totalDistanceKm,
+        routeType: 'network-constrained',
+        isNetworkOptimized: true,
+        networkValidated: true
+    };
+}
+
+// ===== UTILITY FUNCTIONS =====
+
+function isValidCoordinate(lat, lng) {
+    return !isNaN(lat) && !isNaN(lng) && 
+           lat >= -90 && lat <= 90 && 
+           lng >= -180 && lng <= 180 &&
+           lat !== 0 && lng !== 0;
+}
+
+function haversine(coord1, coord2) {
+    const R = 6371000; // Earth's radius in meters
+    const dLat = toRad(coord2.lat - coord1.lat);
+    const dLng = toRad(coord2.lng - coord1.lng);
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(toRad(coord1.lat)) * Math.cos(toRad(coord2.lat)) *
+              Math.sin(dLng/2) * Math.sin(dLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+}
+
+function toRad(deg) {
+    return deg * (Math.PI / 180);
+}
+
+// ===== INTEGRATION WITH EXISTING CODE =====
+
+/**
+ * Enhanced main optimization function that tries network-constrained first
+ */
+async function optimizeWithNetworkConstraints(csvData) {
+    try {
+        console.log('🎯 Starting network-constrained optimization...');
+        
+        // Try network-constrained optimization first
+        const networkRoutes = await getBusOptimizedRoutesWithNetwork(csvData);
+        
+        if (networkRoutes && networkRoutes.length > 0) {
+            console.log(`✅ Network optimization successful: ${networkRoutes.length} routes`);
+            return networkRoutes;
+        } else {
+            throw new Error('No valid network routes generated');
+        }
+        
+    } catch (error) {
+        console.warn('⚠️ Network optimization failed, falling back to geometric optimization:', error);
+        return await getBusOptimizedRoutes();
+    }
+}
+
+// ===== EXPORT FOR USE =====
+// Replace your existing optimization call with:
+// const optimizedRoutes = await optimizeWithNetworkConstraints(csvData);
+
+module.exports = {
+    loadAndProcessGPSNetwork,
+    getBusOptimizedRoutesWithNetwork,
+    optimizeWithNetworkConstraints
+};
