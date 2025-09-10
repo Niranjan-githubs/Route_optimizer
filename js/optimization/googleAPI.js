@@ -1663,10 +1663,10 @@ function findOptimalDepot(cluster) {
         if (bearingDiff > 180) bearingDiff = 360 - bearingDiff;
         
         // Score: prioritize direction alignment over distance
-        const directionScore = 100 - bearingDiff; // Higher score for better alignment
-        const distanceScore = Math.max(0, 50 - distanceToCluster); // Higher score for closer distance
+        const directionScore = 100 - distanceToCluster; // Higher score for better alignment
+        const distanceScore = Math.max(0, 50 - bearingDiff); // Higher score for closer distance
         
-        const totalScore = directionScore * 2 + distanceScore; // Weight direction more heavily
+        const totalScore = directionScore  + distanceScore; // Weight direction more heavily
         
         if (totalScore > bestScore) {
             bestScore = totalScore;
@@ -2823,11 +2823,11 @@ async function getBusOptimizedRoutesWithNetwork(csvData) {
         console.log(`🚌 Starting network-constrained optimization for ${filteredStops.length} stops`);
         
         // Snap stops to network nodes
-        const networkSnappedStops = snapStopsToNetwork(filteredStops);
-        console.log(`📍 Snapped ${networkSnappedStops.length} stops to bus network`);
+        //const networkSnappedStops = snapStopsToNetwork(filteredStops);
+        //console.log(`📍 Snapped ${networkSnappedStops.length} stops to bus network`);
         
         // Build routes using network constraints
-        const networkRoutes = buildNetworkConstrainedRoutes(networkSnappedStops, maxCapacity);
+        const networkRoutes = buildNetworkConstrainedRoutes(filteredStops, maxCapacity);
         
         console.log(`✅ Generated ${networkRoutes.length} network-constrained routes`);
         return networkRoutes;
