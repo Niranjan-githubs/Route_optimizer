@@ -47,20 +47,33 @@ class EfficientStudentClusteringSystem:
         """Load and validate student data"""
         print(f"📂 Loading student data from: {csv_path}")
         
-        self.student_data = pd.read_csv(csv_path)
+        try:
+            self.student_data = pd.read_csv(csv_path)
+        except Exception as e:
+            raise ValueError(f"Failed to read CSV file: {e}")
+        
+        # Check if file is empty
+        if len(self.student_data) == 0:
+            raise ValueError("CSV file is empty")
+        
+        print(f"   Raw data loaded: {len(self.student_data)} rows")
         
         # Validate required columns
         required_cols = ['latitude', 'longitude']
         missing_cols = [col for col in required_cols if col not in self.student_data.columns]
         
         if missing_cols:
-            raise ValueError(f"Missing required columns: {missing_cols}")
+            available_cols = list(self.student_data.columns)
+            raise ValueError(f"Missing required columns: {missing_cols}. Available columns: {available_cols}")
         
         # Clean data
         self.student_data = self.student_data.dropna(subset=['latitude', 'longitude'])
         self.student_data['latitude'] = pd.to_numeric(self.student_data['latitude'], errors='coerce')
         self.student_data['longitude'] = pd.to_numeric(self.student_data['longitude'], errors='coerce')
         self.student_data = self.student_data.dropna(subset=['latitude', 'longitude'])
+        
+        if len(self.student_data) == 0:
+            raise ValueError("No valid student data found after cleaning. Please check your CSV file for valid latitude/longitude values.")
         
         print(f"✅ Loaded {len(self.student_data)} valid student locations")
         return self.student_data
@@ -324,6 +337,21 @@ class EfficientStudentClusteringSystem:
         
         # Prepare coordinate data
         student_coords = self.student_data[['latitude', 'longitude']].astype(float).values
+        
+        # Validate data shape
+        if len(student_coords) == 0:
+            raise ValueError("No valid student data found. Please check your CSV file.")
+        
+        if student_coords.ndim == 1:
+            # Reshape 1D array to 2D if needed
+            student_coords = student_coords.reshape(-1, 1)
+            print("⚠️ Warning: Data was 1D, reshaped to 2D. This may indicate data issues.")
+        
+        if student_coords.shape[1] != 2:
+            raise ValueError(f"Expected 2 columns (latitude, longitude), got {student_coords.shape[1]} columns")
+        
+        print(f"   Data shape: {student_coords.shape}")
+        print(f"   Number of students: {len(student_coords)}")
         
         # For Chennai's scale, use K-means with geographic constraints
         # Estimate good number of clusters based on student density

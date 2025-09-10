@@ -60,7 +60,7 @@ class BatchOptimalRouteSnapper:
                             'route_type': route_type,
                             'route_id': route.get('id', None)
                         })
-        
+        """
         # Process arterials
         if 'arterials' in route_data:
             for route in route_data['arterials']:
@@ -74,10 +74,11 @@ class BatchOptimalRouteSnapper:
                             'route_name': route_name,
                             'route_type': route_type,
                             'route_id': route.get('id', None)
-                        })
+                        })"""
         
         # Convert to numpy array for efficient processing
         self.route_points = np.array(self.route_points)
+        
         
         # Build BallTree for ultra-fast nearest neighbor search
         # Convert to radians for BallTree
@@ -350,7 +351,7 @@ def main():
     
     # File paths - Update these to match your setup
     base_path = "Routes_Data"  # Base directory containing all the day/time folders
-    route_json_path = 'all_working/chennai-complete-roads-60km-precision-2025-08-06 copy.json'
+    route_json_path = 'Route_optimizer/stop_Scripts/vehicle_routes.json'
     
     try:
         # Process all centroid files in the directory structure
@@ -371,19 +372,16 @@ def process_specific_files():
     # Define specific file mappings
     files_to_process = [
         {
-            'input': 'Routes_Data/Friday/3_pm/3_pm_centroids.csv',
-            'normal_output': 'Routes_Data/Friday/3_pm/3_pm_centroids_snapped.csv',
-            'outlier_output': 'Routes_Data/Friday/3_pm/3_pm_centroids_snap_outliers.csv'
-        },
-        {
-            'input': 'Routes_Data/Friday/5_pm/5_pm_centroids.csv',
-            'normal_output': 'Routes_Data/Friday/5_pm/5_pm_centroids_snapped.csv',
-            'outlier_output': 'Routes_Data/Friday/5_pm/5_pm_centroids_snap_outliers.csv'
-        },
+            'input': 'Route_optimizer/Routes_Data/Friday/8_am/8_am_centroids.csv',
+            'normal_output': 'Route_optimizer/stop_Scripts/friday_8am_stops.csv',
+            'outlier_output': 'Route_optimizer/stop_Scripts/friday_8am_stops_outliers.csv'
+        
+        }
+        
         # Add more file mappings as needed
     ]
     
-    route_json_path = 'all_working/chennai-complete-roads-60km-precision-2025-08-06 copy.json'
+    route_json_path = 'Route_optimizer/stop_Scripts/vehicle_routes.json'
     # Load route data once
     snapper.load_route_data(route_json_path)
     
@@ -409,7 +407,7 @@ def process_specific_files():
 
 if __name__ == "__main__":
     # Run the main batch processing
-    main()
+    #main()
     
     # Uncomment below to use the specific file processing instead
-    # process_specific_files()
+    process_specific_files()
