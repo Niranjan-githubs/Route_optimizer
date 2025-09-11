@@ -1,7 +1,124 @@
+// ===== DROPPED STOPS TRACKING SYSTEM =====
+let droppedStopsTracker = {
+    allDroppedStops: [],
+    reasons: {
+        DISTANCE_FILTER: 'Distance from college exceeds limit',
+        CLUSTER_REJECTED: 'Cluster failed validation (bearing/straightness/backtracking)',
+        BACKTRACKING_REMOVAL: 'Removed due to sharp turns causing backtracking',
+        ROUTE_LENGTH_EXCEEDED: 'Route exceeded maximum distance limit',
+        NETWORK_SNAP_FAILED: 'Could not snap to bus network',
+        UNASSIGNED: 'Not assigned to any route',
+        SALVAGE_FAILED: 'Could not be salvaged into a route',
+        CAPACITY_EXCEEDED: 'Exceeded bus capacity limits',
+        INVALID_COORDINATES: 'Invalid or missing coordinates'
+    }
+};
+
+// Function to add a dropped stop with reason
+function trackDroppedStop(stop, reason, additionalInfo = {}) {
+    const droppedStop = {
+        cluster_number: stop.cluster_number || stop.id || 'unknown',
+        original_lat: stop.original_lat || stop.snapped_lat,
+        original_lon: stop.original_lon || stop.snapped_lon,
+        snapped_lat: stop.snapped_lat,
+        snapped_lon: stop.snapped_lon,
+        num_students: stop.num_students || 0,
+        route_name: stop.route_name || 'unknown',
+        route_type: stop.route_type || 'unknown',
+        snap_distance_meters: stop.snap_distance_meters || 0,
+        reason: reason,
+        reason_description: droppedStopsTracker.reasons[reason] || reason,
+        additional_info: JSON.stringify(additionalInfo),
+        dropped_at: new Date().toISOString(),
+        distance_from_college_km: stop.distance_from_college_km || 
+            (stop.snapped_lat && stop.snapped_lon ? 
+                calculateHaversineDistance(COLLEGE_COORDS[0], COLLEGE_COORDS[1], 
+                    parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon)) : null)
+    };
+    
+    droppedStopsTracker.allDroppedStops.push(droppedStop);
+    console.log(`📋 Tracked dropped stop ${droppedStop.cluster_number}: ${reason}`);
+}
+
+// Function to export dropped stops as CSV
+function exportDroppedStopsAsCSV() {
+    if (droppedStopsTracker.allDroppedStops.length === 0) {
+        console.log('✅ No dropped stops to export');
+        return null;
+    }
+    
+    const headers = [
+        'cluster_number', 'original_lat', 'original_lon', 'snapped_lat', 'snapped_lon',
+        'num_students', 'route_name', 'route_type', 'snap_distance_meters',
+        'reason', 'reason_description', 'additional_info', 'dropped_at', 'distance_from_college_km'
+    ];
+    
+    const csvContent = [
+        headers.join(','),
+        ...droppedStopsTracker.allDroppedStops.map(stop => 
+            headers.map(header => {
+                const value = stop[header] || '';
+                // Escape commas and quotes in CSV
+                return typeof value === 'string' && (value.includes(',') || value.includes('"')) 
+                    ? `"${value.replace(/"/g, '""')}"` 
+                    : value;
+            }).join(',')
+        )
+    ].join('\n');
+    
+    // Create and download CSV file
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dropped_stops_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+    
+    console.log(`📊 Exported ${droppedStopsTracker.allDroppedStops.length} dropped stops to CSV`);
+    return csvContent;
+}
+
+// Function to get dropped stops summary
+function getDroppedStopsSummary() {
+    const summary = {
+        total_dropped: droppedStopsTracker.allDroppedStops.length,
+        total_students_dropped: droppedStopsTracker.allDroppedStops.reduce((sum, stop) => 
+            sum + parseInt(stop.num_students || 0), 0),
+        by_reason: {}
+    };
+    
+    // Group by reason
+    droppedStopsTracker.allDroppedStops.forEach(stop => {
+        if (!summary.by_reason[stop.reason]) {
+            summary.by_reason[stop.reason] = {
+                count: 0,
+                students: 0,
+                stops: []
+            };
+        }
+        summary.by_reason[stop.reason].count++;
+        summary.by_reason[stop.reason].students += parseInt(stop.num_students || 0);
+        summary.by_reason[stop.reason].stops.push(stop.cluster_number);
+    });
+    
+    return summary;
+}
+
+// Manual export functions (call these from browser console)
+window.exportDroppedStops = exportDroppedStopsAsCSV;
+window.getDroppedStopsSummary = getDroppedStopsSummary;
+window.getDroppedStopsData = () => droppedStopsTracker.allDroppedStops;
+
 // CLIENT-SIDE: Use your server proxy instead of direct API calls
 async function optimizeWithGoogleAPI() {
     try {
         console.log('🎯 Starting enhanced route optimization with multi-strategy approach...');
+        
+        // Clear previous dropped stops tracking
+        droppedStopsTracker.allDroppedStops = [];
         
         // Use the new getBusOptimizedRoutes function instead of the old approach
         const optimizedRoutes = await getBusOptimizedRoutes();
@@ -11,6 +128,14 @@ async function optimizeWithGoogleAPI() {
         }
         
         console.log(`✅ Generated ${optimizedRoutes.length} optimized routes`);
+        
+        // Export dropped stops if any
+        if (droppedStopsTracker.allDroppedStops.length > 0) {
+            const summary = getDroppedStopsSummary();
+            console.log('📊 DROPPED STOPS SUMMARY:', summary);
+            exportDroppedStopsAsCSV();
+        }
+        
         return optimizedRoutes;
         
     } catch (error) {
@@ -18,6 +143,225 @@ async function optimizeWithGoogleAPI() {
         showStatus(`⚠️ Route Optimization API failed: ${error.message}`, 'warning');
         return await simulateOptimization();
     }
+}
+
+// Function to add a dropped stop with reason
+function trackDroppedStop(stop, reason, additionalInfo = {}) {
+    const droppedStop = {
+        cluster_number: stop.cluster_number || stop.id || 'unknown',
+        original_lat: stop.original_lat || stop.snapped_lat,
+        original_lon: stop.original_lon || stop.snapped_lon,
+        snapped_lat: stop.snapped_lat,
+        snapped_lon: stop.snapped_lon,
+        num_students: stop.num_students || 0,
+        route_name: stop.route_name || 'unknown',
+        route_type: stop.route_type || 'unknown',
+        snap_distance_meters: stop.snap_distance_meters || 0,
+        reason: reason,
+        reason_description: droppedStopsTracker.reasons[reason] || reason,
+        additional_info: additionalInfo,
+        dropped_at: new Date().toISOString(),
+        distance_from_college_km: stop.distance_from_college_km || 
+            (stop.snapped_lat && stop.snapped_lon ? 
+                calculateHaversineDistance(COLLEGE_COORDS[0], COLLEGE_COORDS[1], 
+                    parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon)) : null)
+    };
+    
+    droppedStopsTracker.allDroppedStops.push(droppedStop);
+    console.log(`📋 Tracked dropped stop ${droppedStop.cluster_number}: ${reason}`);
+}
+
+// Function to export dropped stops as CSV
+function exportDroppedStopsAsCSV() {
+    if (droppedStopsTracker.allDroppedStops.length === 0) {
+        console.log('✅ No dropped stops to export');
+        return null;
+    }
+    
+    const headers = [
+        'cluster_number', 'original_lat', 'original_lon', 'snapped_lat', 'snapped_lon',
+        'num_students', 'route_name', 'route_type', 'snap_distance_meters',
+        'reason', 'reason_description', 'additional_info', 'dropped_at', 'distance_from_college_km'
+    ];
+    
+    const csvContent = [
+        headers.join(','),
+        ...droppedStopsTracker.allDroppedStops.map(stop => 
+            headers.map(header => {
+                const value = stop[header] || '';
+                // Escape commas and quotes in CSV
+                return typeof value === 'string' && (value.includes(',') || value.includes('"')) 
+                    ? `"${value.replace(/"/g, '""')}"` 
+                    : value;
+            }).join(',')
+        )
+    ].join('\n');
+    
+    // Create and download CSV file
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dropped_stops_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+    
+    console.log(`�� Exported ${droppedStopsTracker.allDroppedStops.length} dropped stops to CSV`);
+    return csvContent;
+}
+
+//-------DROPPED STOPS TRACKING SYSTEM -------
+
+// Function to get dropped stops summary
+function getDroppedStopsSummary() {
+    const summary = {
+        total_dropped: droppedStopsTracker.allDroppedStops.length,
+        total_students_dropped: droppedStopsTracker.allDroppedStops.reduce((sum, stop) => 
+            sum + parseInt(stop.num_students || 0), 0),
+        by_reason: {}
+    };
+    
+    // Group by reason
+    droppedStopsTracker.allDroppedStops.forEach(stop => {
+        if (!summary.by_reason[stop.reason]) {
+            summary.by_reason[stop.reason] = {
+                count: 0,
+                students: 0,
+                stops: []
+            };
+        }
+        summary.by_reason[stop.reason].count++;
+        summary.by_reason[stop.reason].students += parseInt(stop.num_students || 0);
+        summary.by_reason[stop.reason].stops.push(stop.cluster_number);
+    });
+    
+    return summary;
+}
+
+function trackDroppedStop(stop, reason, additionalInfo = {}) {
+    const droppedStop = {
+        cluster_number: stop.cluster_number || stop.id || 'unknown',
+        original_lat: stop.original_lat || stop.snapped_lat,
+        original_lon: stop.original_lon || stop.snapped_lon,
+        snapped_lat: stop.snapped_lat,
+        snapped_lon: stop.snapped_lon,
+        num_students: stop.num_students || 0,
+        route_name: stop.route_name || 'unknown',
+        route_type: stop.route_type || 'unknown',
+        snap_distance_meters: stop.snap_distance_meters || 0,
+        reason: reason,
+        reason_description: droppedStopsTracker.reasons[reason] || reason,
+        additional_info: additionalInfo,
+        dropped_at: new Date().toISOString(),
+        distance_from_college_km: stop.distance_from_college_km || 
+            (stop.snapped_lat && stop.snapped_lon ? 
+                calculateHaversineDistance(COLLEGE_COORDS[0], COLLEGE_COORDS[1], 
+                    parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon)) : null)
+    };
+    
+    droppedStopsTracker.allDroppedStops.push(droppedStop);
+    console.log(`📋 Tracked dropped stop ${droppedStop.cluster_number}: ${reason}`);
+}
+
+
+// Function to export dropped stops as CSV
+function exportDroppedStopsAsCSV() {
+    if (droppedStopsTracker.allDroppedStops.length === 0) {
+        console.log('✅ No dropped stops to export');
+        return null;
+    }
+    
+    const headers = [
+        'cluster_number', 'original_lat', 'original_lon', 'snapped_lat', 'snapped_lon',
+        'num_students', 'route_name', 'route_type', 'snap_distance_meters',
+        'reason', 'reason_description', 'additional_info', 'dropped_at', 'distance_from_college_km'
+    ];
+    
+    const csvContent = [
+        headers.join(','),
+        ...droppedStopsTracker.allDroppedStops.map(stop => 
+            headers.map(header => {
+                const value = stop[header] || '';
+                // Escape commas and quotes in CSV
+                return typeof value === 'string' && (value.includes(',') || value.includes('"')) 
+                    ? `"${value.replace(/"/g, '""')}"` 
+                    : value;
+            }).join(',')
+        )
+    ].join('\n');
+    
+    // Create and download CSV file
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dropped_stops_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+    
+    console.log(`�� Exported ${droppedStopsTracker.allDroppedStops.length} dropped stops to CSV`);
+    return csvContent;
+}
+
+// Function to get dropped stops summary
+function getDroppedStopsSummary() {
+    const summary = {
+        total_dropped: droppedStopsTracker.allDroppedStops.length,
+        total_students_dropped: droppedStopsTracker.allDroppedStops.reduce((sum, stop) => 
+            sum + parseInt(stop.num_students || 0), 0),
+        by_reason: {}
+    };
+    
+    // Group by reason
+    droppedStopsTracker.allDroppedStops.forEach(stop => {
+        if (!summary.by_reason[stop.reason]) {
+            summary.by_reason[stop.reason] = {
+                count: 0,
+                students: 0,
+                stops: []
+            };
+        }
+        summary.by_reason[stop.reason].count++;
+        summary.by_reason[stop.reason].students += parseInt(stop.num_students || 0);
+        summary.by_reason[stop.reason].stops.push(stop.cluster_number);
+    });
+    
+    return summary;
+}
+
+function filterStopsByDistance(stopsData, maxRadiusKm = 50) {
+    const filteredStops = [];
+    const excludedStops = [];
+    
+    stopsData.forEach(stop => {
+        // Calculate distance from college to stop
+        const distanceToStop = calculateHaversineDistance(
+            COLLEGE_COORDS[0], COLLEGE_COORDS[1],
+            parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon)
+        );
+        
+        // Only include stops within reasonable distance from college
+        if (distanceToStop <= maxRadiusKm) {
+            filteredStops.push(stop);
+        } else {
+            console.warn(`⚠️ Stop ${stop.cluster_number} too far from college (${distanceToStop.toFixed(1)}km) - Excluding`);
+            excludedStops.push(stop);
+            
+            // Track the dropped stop
+            trackDroppedStop(stop, 'DISTANCE_FILTER', {
+                distance_km: distanceToStop,
+                max_allowed_km: maxRadiusKm
+            });
+        }
+    });
+    
+    console.log(`📊 Pre-filtering: ${filteredStops.length}/${stopsData.length} stops within ${maxRadiusKm}km radius`);
+    window.excludedStops = excludedStops;
+    return filteredStops;
 }
 
 
@@ -210,6 +554,7 @@ async function processRouteOptimizationResponse(apiResponse) {
     
     return routes;
 }
+
 
 
 // ✅ SIMPLIFIED Route validation (basic checks only)
@@ -632,6 +977,15 @@ function createGeographicalClusters(stops, maxCapacity) {
         } else {
             console.warn(`⚠️ Cluster ${cluster.direction} rejected - will try to salvage`);
             rejectedClusters.push(cluster);
+            
+            // Track all stops in rejected cluster
+            cluster.stops.forEach(stop => {
+                trackDroppedStop(stop, 'CLUSTER_REJECTED', {
+                    cluster_direction: cluster.direction,
+                    cluster_stops_count: cluster.stops.length,
+                    cluster_students: cluster.totalStudents
+                });
+            });
         }
     });
     
@@ -961,6 +1315,7 @@ function removeBacktrackingStops(cluster) {
     // Sort stops by distance from college
     stops.sort((a, b) => a.distance - b.distance);
     
+    
     // Identify stops that cause backtracking
     const problematicIndices = [];
     
@@ -989,6 +1344,16 @@ function removeBacktrackingStops(cluster) {
             problematicIndices.push(i);
         }
     }
+
+    // Track problematic stops before removing them
+    problematicIndices.forEach(index => {
+        trackDroppedStop(stops[index], 'BACKTRACKING_REMOVAL', {
+            cluster_direction: cluster.direction,
+            bearing_change: Math.abs(calculateBearing(stops[index-1].lat, stops[index-1].lng, stops[index].lat, stops[index].lng) - 
+                                    calculateBearing(stops[index].lat, stops[index].lng, stops[index+1].lat, stops[index+1].lng)),
+            position_in_route: index
+        });
+    });
     
     // Remove problematic stops
     const optimizedStops = stops.filter((stop, index) => !problematicIndices.includes(index));
@@ -1338,8 +1703,22 @@ function validateRouteLength(route) {
     // Strictly enforce limits
     if (distanceKm > STRICT_MAX_DISTANCE) {
         console.warn(`⚠️ Route ${route.busId} rejected - exceeds strict ${STRICT_MAX_DISTANCE}km limit (${distanceKm.toFixed(1)}km)`);
+
+        // Track all stops in rejected route
+        if (route.stops) {
+            route.stops.forEach(stop => {
+                trackDroppedStop(stop, 'ROUTE_LENGTH_EXCEEDED', {
+                    route_id: route.busId,
+                    route_distance_km: distanceKm,
+                    max_allowed_km: STRICT_MAX_DISTANCE
+                });
+            });
+        }
+
         return false;
     }
+
+
     
     // Add warnings but still accept routes near the limit
     if (distanceKm > PREFERRED_MAX_DISTANCE) {
@@ -2830,6 +3209,44 @@ async function getBusOptimizedRoutesWithNetwork(csvData) {
         const networkRoutes = buildNetworkConstrainedRoutes(filteredStops, maxCapacity);
         
         console.log(`✅ Generated ${networkRoutes.length} network-constrained routes`);
+
+        // ✅ FINAL: Track unserved stops
+        const {
+            servingRoutes,
+            servedStops,
+            servedStudents,
+            duplicateStops,
+            unservedStops
+        } = analyzeRouteCoverage(allRoutes, filteredStops);
+
+        // Track unserved stops
+        unservedStops.forEach(stop => {
+            trackDroppedStop(stop, 'UNASSIGNED', {
+                total_routes_generated: allRoutes.length,
+                total_stops_served: servedStops.length
+            });
+        });
+
+        // Export dropped stops summary
+        const summary = getDroppedStopsSummary();
+        console.log('📊 DROPPED STOPS SUMMARY:', summary);
+
+        // Auto-export dropped stops CSV
+        if (droppedStopsTracker.allDroppedStops.length > 0) {
+            exportDroppedStopsAsCSV();
+        }
+        
+        // Auto-export outliers CSV after optimization
+        try {
+            if (typeof window.exportOutliersCSV === 'function') {
+                await window.exportOutliersCSV();
+            }
+        } catch (error) {
+            console.log('⚠️ Could not auto-export outliers CSV:', error.message);
+        }
+
+
+
         return networkRoutes;
         
     } catch (error) {

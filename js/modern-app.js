@@ -1409,6 +1409,97 @@ function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
     return distance;
 }
 
+// Validate export data structure
+function validateExportData(exportData) {
+    console.log('🔍 Validating export data structure...');
+    
+    const requiredKeys = ['routeSummary', 'stopDetails', 'assignmentDetails', 'performanceMetrics'];
+    
+    requiredKeys.forEach(key => {
+        const data = exportData[key];
+        if (!data) {
+            console.error(`❌ Missing ${key} in export data`);
+            return;
+        }
+        
+        if (!Array.isArray(data)) {
+            console.error(`❌ ${key} is not an array:`, typeof data);
+            return;
+        }
+        
+        console.log(`✅ ${key}: ${data.length} items`);
+        
+        // Check for problematic items
+        if (data.length > 0) {
+            const sampleItem = data[0];
+            console.log(`🔍 Sample ${key} item:`, sampleItem);
+            
+            // Check for circular references or complex objects
+            try {
+                JSON.stringify(sampleItem);
+                console.log(`✅ ${key} sample item is serializable`);
+            } catch (error) {
+                console.warn(`⚠️ ${key} sample item has serialization issues:`, error.message);
+                
+                // Try to identify problematic properties
+                Object.keys(sampleItem).forEach(prop => {
+                    try {
+                        JSON.stringify(sampleItem[prop]);
+                    } catch (propError) {
+                        console.warn(`⚠️ Problematic property "${prop}" in ${key}:`, propError.message);
+                    }
+                });
+            }
+        }
+    });
+}
+
+// Test export function for debugging
+function testExportData() {
+    console.log('🧪 Testing export data...');
+    
+    if (!window.optimizationResults || !window.optimizationResults.length) {
+        console.log('❌ No optimization results available for testing');
+        return;
+    }
+    
+    const shiftTime = '8am';
+    const dayOfWeek = 'monday';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    
+    try {
+        const exportData = createComprehensiveExportData(shiftTime, dayOfWeek, timestamp);
+        console.log('✅ Export data created successfully');
+        validateExportData(exportData);
+        
+        // Test each data array individually
+        const testData = [
+            { name: 'Route Summary', data: exportData.routeSummary },
+            { name: 'Stop Details', data: exportData.stopDetails },
+            { name: 'Assignment Details', data: exportData.assignmentDetails },
+            { name: 'Performance Metrics', data: exportData.performanceMetrics }
+        ];
+        
+        testData.forEach(test => {
+            console.log(`🧪 Testing ${test.name}...`);
+            try {
+                const safeData = safeSerializeForCSV(test.data);
+                const csv = Papa.unparse(safeData);
+                console.log(`✅ ${test.name} serialized successfully (${csv.length} chars)`);
+            } catch (error) {
+                console.error(`❌ ${test.name} serialization failed:`, error);
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Test export failed:', error);
+    }
+}
+
+// Make functions globally available
+window.exportOutliersCSV = exportOutliersCSV;
+window.testExportData = testExportData;
+
 // Toast Notifications
 function showToast(message, type = 'info', duration = 5000) {
     const container = document.getElementById('toastContainer');
@@ -6619,6 +6710,22 @@ async function exportComprehensiveResults() {
         // Create comprehensive export data
         const exportData = createComprehensiveExportData(shiftTime, dayOfWeek, timestamp);
         
+        // Debug: Log data structure
+        console.log('🔍 Export data structure:', {
+            routeSummary: exportData.routeSummary?.length || 0,
+            stopDetails: exportData.stopDetails?.length || 0,
+            assignmentDetails: exportData.assignmentDetails?.length || 0,
+            performanceMetrics: exportData.performanceMetrics?.length || 0
+        });
+        
+        // Debug: Check for problematic data
+        if (exportData.assignmentDetails) {
+            console.log('🔍 Sample assignment detail:', exportData.assignmentDetails[0]);
+        }
+        
+        // Validate export data structure
+        validateExportData(exportData);
+        
         // Generate and download CSV files
         await generateMultipleCSVFiles(exportData, shiftTime, dayOfWeek, timestamp);
         
@@ -6835,9 +6942,106 @@ async function generateMultipleCSVFiles(exportData, shiftTime, dayOfWeek, timest
         }
     ];
     
+    // Safe serialization function to handle complex objects
+function safeSerializeForCSV(data) {
+    if (!Array.isArray(data)) {
+        console.error('Data is not an array:', data);
+        return [];
+    }
+    
+    return data.map((item, index) => {
+        try {
+            if (item === null || item === undefined) {
+                return { error: `Item ${index} is null/undefined` };
+            }
+            
+            if (typeof item !== 'object') {
+                return { value: item };
+            }
+            
+            const safeItem = {};
+            for (const [key, value] of Object.entries(item)) {
+                try {
+                    // Skip functions and undefined
+                    if (typeof value === 'function' || value === undefined) {
+                        continue;
+                    }
+                    
+                    // Handle null values
+                    if (value === null) {
+                        safeItem[key] = '';
+                        continue;
+                    }
+                    
+                    // Handle primitive types
+                    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                        safeItem[key] = value;
+                        continue;
+                    }
+                    
+                    // Handle arrays
+                    if (Array.isArray(value)) {
+                        safeItem[key] = value.map(v => {
+                            if (v === null || v === undefined) return '';
+                            if (typeof v === 'object') return JSON.stringify(v);
+                            return String(v);
+                        }).join('; ');
+                        continue;
+                    }
+                    
+                    // Handle objects
+                    if (typeof value === 'object') {
+                        // Check for circular references
+                        try {
+                            safeItem[key] = JSON.stringify(value);
+                        } catch (circularError) {
+                            safeItem[key] = '[Circular Reference]';
+                        }
+                        continue;
+                    }
+                    
+                    // Fallback for any other type
+                    safeItem[key] = String(value);
+                    
+                } catch (keyError) {
+                    console.warn(`⚠️ Error processing key "${key}" in item ${index}:`, keyError);
+                    safeItem[key] = `[Error: ${keyError.message}]`;
+                }
+            }
+            return safeItem;
+        } catch (itemError) {
+            console.error(`❌ Error processing item ${index}:`, itemError);
+            return { error: `Failed to process item ${index}: ${itemError.message}` };
+        }
+    });
+}
+    
     // Create individual CSV files
-    files.forEach(file => {
-        const csv = Papa.unparse(file.data);
+    files.forEach((file, index) => {
+        try {
+            console.log(`🔍 Processing file ${index + 1}: ${file.name}`);
+            console.log(`🔍 Data type:`, typeof file.data, 'Length:', file.data?.length);
+            
+            // Check for problematic data before processing
+            if (!Array.isArray(file.data)) {
+                console.error(`❌ ${file.name} data is not an array:`, typeof file.data);
+                return;
+            }
+            
+            if (file.data.length === 0) {
+                console.warn(`⚠️ ${file.name} has no data, skipping`);
+                return;
+            }
+            
+            // Log sample data for debugging
+            console.log(`🔍 Sample data from ${file.name}:`, file.data[0]);
+            
+            // Safely serialize the data
+            const safeData = safeSerializeForCSV(file.data);
+            console.log(`🔍 Safe data length:`, safeData.length);
+            console.log(`🔍 Sample safe data:`, safeData[0]);
+            
+            const csv = Papa.unparse(safeData);
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
         const url = URL.createObjectURL(blob);
@@ -6848,7 +7052,189 @@ async function generateMultipleCSVFiles(exportData, shiftTime, dayOfWeek, timest
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
+            console.log(`✅ Exported ${file.name} successfully`);
+        } catch (error) {
+            console.error(`❌ Failed to export ${file.name}:`, error);
+            console.error(`❌ Error details:`, {
+                message: error.message,
+                stack: error.stack,
+                dataType: typeof file.data,
+                dataLength: file.data?.length,
+                sampleData: file.data?.[0]
+            });
+            
+            // Try to export with minimal data
+            try {
+                console.log(`🔄 Trying minimal export for ${file.name}...`);
+                const minimalData = file.data.map((item, itemIndex) => {
+                    try {
+                        const minimal = {};
+                        for (const key in item) {
+                            const value = item[key];
+                            if (value === null || value === undefined) {
+                                minimal[key] = '';
+                            } else if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                                minimal[key] = value;
+                            } else if (typeof value === 'object') {
+                                minimal[key] = JSON.stringify(value);
+                            } else {
+                                minimal[key] = String(value);
+                            }
+                        }
+                        return minimal;
+                    } catch (itemError) {
+                        console.error(`❌ Error processing item ${itemIndex} in ${file.name}:`, itemError);
+                        return { error: `Failed to process item ${itemIndex}` };
+                    }
+                });
+                
+                console.log(`🔍 Minimal data sample:`, minimalData[0]);
+                
+                const csv = Papa.unparse(minimalData);
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                const url = URL.createObjectURL(blob);
+                link.setAttribute('href', url);
+                link.setAttribute('download', file.name.replace('.csv', '_minimal.csv'));
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+                console.log(`✅ Exported ${file.name} (minimal version) successfully`);
+            } catch (minimalError) {
+                console.error(`❌ Failed to export even minimal version of ${file.name}:`, minimalError);
+                console.error(`❌ Minimal error details:`, {
+                    message: minimalError.message,
+                    stack: minimalError.stack
+                });
+                
+                // Last resort: create a simple error CSV
+                try {
+                    const errorCsv = `Error,Message,File\n"Export Failed","${minimalError.message}","${file.name}"\n`;
+                    const blob = new Blob([errorCsv], { type: 'text/csv;charset=utf-8;' });
+                    const link = document.createElement('a');
+                    const url = URL.createObjectURL(blob);
+                    link.setAttribute('href', url);
+                    link.setAttribute('download', file.name.replace('.csv', '_error.csv'));
+                    link.style.visibility = 'hidden';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(url);
+                    console.log(`⚠️ Created error CSV for ${file.name}`);
+                } catch (finalError) {
+                    console.error(`❌ Even error CSV creation failed for ${file.name}:`, finalError);
+                }
+            }
+        }
     });
+}
+
+// Export dropped stops function
+function exportDroppedStops() {
+    try {
+        if (typeof window.exportDroppedStops === 'function') {
+            window.exportDroppedStops();
+            showToast('Dropped stops exported successfully!', 'success');
+        } else {
+            showToast('Dropped stops tracking not available. Please run optimization first.', 'warning');
+        }
+    } catch (error) {
+        console.error('Export dropped stops error:', error);
+        showToast(`Failed to export dropped stops: ${error.message}`, 'error');
+    }
+}
+
+// Export outliers CSV function
+async function exportOutliersCSV() {
+    try {
+        const shiftTime = document.getElementById('shiftTime').value;
+        const dayOfWeek = document.getElementById('dayOfWeek').value;
+        
+        if (!shiftTime || !dayOfWeek) {
+            showToast('Please select both shift time and day of week', 'warning');
+            return;
+        }
+        
+        // Construct the outliers CSV file path
+        const outliersFileName = `${dayOfWeek}_${shiftTime}_centroids_snap_outliers.csv`;
+        const outliersFilePath = `Routes_Data/${dayOfWeek.charAt(0).toUpperCase() + dayOfWeek.slice(1)}/${shiftTime}/${outliersFileName}`;
+        
+        console.log('🔍 Looking for outliers file:', outliersFilePath);
+        
+        try {
+            // Try to fetch the outliers CSV file
+            const response = await fetch(outliersFilePath);
+            
+            if (!response.ok) {
+                throw new Error(`File not found: ${response.status} ${response.statusText}`);
+            }
+            
+            const csvContent = await response.text();
+            
+            // Create and download the file
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `outliers_${dayOfWeek}_${shiftTime}_${new Date().toISOString().split('T')[0]}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+            
+            showToast(`Outliers CSV exported successfully! (${dayOfWeek} ${shiftTime})`, 'success');
+            console.log(`✅ Exported outliers CSV: ${outliersFilePath}`);
+            
+        } catch (fetchError) {
+            console.error('❌ Failed to fetch outliers file:', fetchError);
+            
+            // Try alternative file naming patterns
+            const alternativePaths = [
+                `Routes_Data/${dayOfWeek.charAt(0).toUpperCase() + dayOfWeek.slice(1)}/${shiftTime}/${dayOfWeek}_${shiftTime}_centroids_snap_outliers.csv`,
+                `Routes_Data/${dayOfWeek.charAt(0).toUpperCase() + dayOfWeek.slice(1)}/${shiftTime}/${shiftTime}_centroids_snap_outliers.csv`,
+                `Routes_Data/${dayOfWeek.charAt(0).toUpperCase() + dayOfWeek.slice(1)}/${shiftTime}/outliers.csv`
+            ];
+            
+            let found = false;
+            for (const altPath of alternativePaths) {
+                try {
+                    console.log('🔍 Trying alternative path:', altPath);
+                    const altResponse = await fetch(altPath);
+                    if (altResponse.ok) {
+                        const csvContent = await altResponse.text();
+                        
+                        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `outliers_${dayOfWeek}_${shiftTime}_${new Date().toISOString().split('T')[0]}.csv`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+                        
+                        showToast(`Outliers CSV exported successfully! (${dayOfWeek} ${shiftTime})`, 'success');
+                        console.log(`✅ Exported outliers CSV from alternative path: ${altPath}`);
+                        found = true;
+                        break;
+                    }
+                } catch (altError) {
+                    console.log('❌ Alternative path failed:', altPath, altError.message);
+                }
+            }
+            
+            if (!found) {
+                showToast(`Outliers CSV not found for ${dayOfWeek} ${shiftTime}. Please ensure the file exists.`, 'error');
+                console.error('❌ No outliers file found for:', { dayOfWeek, shiftTime, originalPath: outliersFilePath });
+            }
+        }
+        
+    } catch (error) {
+        console.error('Export outliers CSV error:', error);
+        showToast(`Failed to export outliers CSV: ${error.message}`, 'error');
+    }
 }
 
 // Calculate Haversine distance between two points
