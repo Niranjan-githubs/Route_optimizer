@@ -730,28 +730,31 @@ def find_csv_files(base_directory):
     """
     csv_files = []
     
-    # Use glob to find all CSV files recursively
-    pattern = os.path.join(base_directory, "**", "*.csv")
-    
-    for csv_path in glob.glob(pattern, recursive=True):
+    # Use glob to find all CSV files recursively, including root
+    pattern_recursive = os.path.join(base_directory, "**", "*.csv")
+    pattern_root = os.path.join(base_directory, "*.csv")
+
+    all_csv_paths = set(glob.glob(pattern_recursive, recursive=True)) | set(glob.glob(pattern_root))
+
+    for csv_path in all_csv_paths:
         # Get the relative path from base directory
         rel_path = os.path.relpath(csv_path, base_directory)
-        
+
         # Skip leave.csv files and coords.csv (bus stops)
         filename = os.path.basename(csv_path).lower()
         if filename in ['leave.csv', 'coords.csv']:
             print(f"⏭️ Skipping: {rel_path}")
             continue
-        
+
         # Extract directory and filename components
         dir_path = os.path.dirname(csv_path)
         file_prefix = os.path.splitext(os.path.basename(csv_path))[0]  # Remove .csv extension
-        
+
         csv_files.append((csv_path, rel_path, dir_path, file_prefix))
-    
+
     return csv_files
 
-def process_multiple_files(base_directory="Routes_Data_5800", google_maps_api_key="YOUR_API_KEY", 
+def process_multiple_files(base_directory="Route_optimizer\Routes_Data_5800", google_maps_api_key="YOUR_API_KEY", 
                          max_distance_km=1.0, total_api_budget=200):
     """
     Process multiple CSV files until free tier budget is exhausted, excluding leave.csv files
@@ -978,8 +981,8 @@ def main():
     GOOGLE_MAPS_API_KEY = "AIzaSyAiVn2TbI7qSuTzw1EKvY4urq7V5aTZkZg"  # Replace with your actual API key
     MAX_DISTANCE_KM = 1.0
     FREE_TIER_BUDGET = 200.0  # $200 monthly free credit
-    BASE_DIRECTORY = "Routes_Data_5800"  # Base directory containing all CSV files
-    
+    BASE_DIRECTORY = "D:/bus/Route_optimizer/Routes_Data_5800"  # Absolute path to data directory
+
     try:
         # Process multiple files with budget constraints
         process_multiple_files(

@@ -350,8 +350,8 @@ def main():
     
     # File paths - Update these to match your setup
     base_path = "Routes_Data"  # Base directory containing all the day/time folders
-    route_json_path = 'all_working/chennai-complete-roads-60km-precision-2025-08-06 copy.json'
-    
+    route_json_path = 'stop_Scripts/vehicle_routes.json'
+
     try:
         # Process all centroid files in the directory structure
         snapper.process_all_files(base_path, route_json_path)
@@ -371,19 +371,15 @@ def process_specific_files():
     # Define specific file mappings
     files_to_process = [
         {
-            'input': 'Routes_Data/Friday/3_pm/3_pm_centroids.csv',
-            'normal_output': 'Routes_Data/Friday/3_pm/3_pm_centroids_snapped.csv',
-            'outlier_output': 'Routes_Data/Friday/3_pm/3_pm_centroids_snap_outliers.csv'
+            'input': 'Routes_Data_5800/TransportMasterAll_centroids.csv',
+            'normal_output': 'Routes_Data_5800/TransportMasterAll_centroids_snapped.csv',
+            'outlier_output': 'Routes_Data_5800/TransportMasterAll_centroids_snap_outliers.csv'
         },
-        {
-            'input': 'Routes_Data/Friday/5_pm/5_pm_centroids.csv',
-            'normal_output': 'Routes_Data/Friday/5_pm/5_pm_centroids_snapped.csv',
-            'outlier_output': 'Routes_Data/Friday/5_pm/5_pm_centroids_snap_outliers.csv'
-        },
+        
         # Add more file mappings as needed
     ]
-    
-    route_json_path = 'all_working/chennai-complete-roads-60km-precision-2025-08-06 copy.json'
+
+    route_json_path = 'stop_Scripts/vehicle_routes.json'
     # Load route data once
     snapper.load_route_data(route_json_path)
     
@@ -409,7 +405,7 @@ def process_specific_files():
 
 if __name__ == "__main__":
     # Run the main batch processing
-    main()
+    #main()
     
     # Uncomment below to use the specific file processing instead
-    # process_specific_files()
+    process_specific_files()
