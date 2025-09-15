@@ -1,16 +1,12 @@
-# test_connection.py
-from google.cloud import optimization_v1
+import pandas as pd
 
-def test_connection():
-    try:
-        # This will use the credentials from your environment variable
-        # or the explicitly provided credentials
-        client = optimization_v1.FleetRoutingClient()
-        print("✅ Successfully created Fleet Routing client")
-        return True
-    except Exception as e:
-        print(f"❌ Error: {str(e)}")
-        return False
+# Load your CSV file
+df = pd.read_csv("TransportMasterProxy-2025-09-15 (2).csv")  # replace with your actual file name
 
-if __name__ == "__main__":
-    test_connection()
+# Filter rows where confirmed = 0
+not_confirmed_df = df[df["confirmed"] == 0]
+
+# Save to a new CSV file
+not_confirmed_df.to_csv("not_confirmed.csv", index=False)
+
+print("New CSV file 'not_confirmed.csv' created with unconfirmed users.")

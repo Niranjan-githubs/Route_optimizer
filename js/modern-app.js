@@ -1057,21 +1057,33 @@ function handleQuickFilter(event) {
 function applyEfficiencyFilter(filter) {
     const checkboxes = document.querySelectorAll('.route-checkbox');
     
+    // Fix: Use window.optimizationResults instead of AppState.optimizationResults
+    if (!window.optimizationResults) {
+        console.warn('No optimization results available for filtering');
+        return;
+    }
+    
     checkboxes.forEach((checkbox, index) => {
-        const route = AppState.optimizationResults[index];
+        const route = window.optimizationResults[index];
         if (!route) return;
         
         let shouldShow = true;
         
+        // Fix: Extract numeric efficiency value properly
+        const efficiencyString = route.efficiency || '0%';
+        const efficiencyValue = parseFloat(efficiencyString.replace('%', '')) || 0;
+        
+        console.log(`🔍 Route ${index + 1}: Efficiency = ${efficiencyValue}%, Total Students = ${route.totalStudents}`);
+        
         switch (filter) {
             case 'high-efficiency':
-                shouldShow = route.efficiency.includes('8') || route.efficiency.includes('9');
+                shouldShow = efficiencyValue >= 80; // 80% and above
                 break;
             case 'medium-efficiency':
-                shouldShow = route.efficiency.includes('5') || route.efficiency.includes('6') || route.efficiency.includes('7');
+                shouldShow = efficiencyValue >= 50 && efficiencyValue < 80; // 50-79%
                 break;
             case 'low-efficiency':
-                shouldShow = route.efficiency.includes('1') || route.efficiency.includes('2') || route.efficiency.includes('3') || route.efficiency.includes('4');
+                shouldShow = efficiencyValue < 50; // Below 50%
                 break;
             case 'all':
             default:
@@ -1082,6 +1094,8 @@ function applyEfficiencyFilter(filter) {
         checkbox.checked = shouldShow;
         handleRouteToggle(index, shouldShow);
     });
+    
+    console.log(`🔍 Applied filter: ${filter}`);
 }
 
 // Map Utilities
@@ -1312,56 +1326,6 @@ function showRouteInfo(route, index) {
 }
 
 // Export Results
-function exportResults() {
-    if (!AppState.optimizationResults.length) {
-        showToast('No results to export', 'warning');
-        return;
-    }
-    
-    try {
-        const shiftTime = document.getElementById('shiftTime').value;
-        const dayOfWeek = document.getElementById('dayOfWeek').value;
-        
-        const exportData = [];
-        AppState.optimizationResults.forEach((route, routeIndex) => {
-            route.stops.forEach((stop, stopIndex) => {
-                exportData.push({
-                    bus_id: route.busId,
-                    depot: route.depot,
-                    route_sequence: stopIndex + 1,
-                    stop_cluster: stop.cluster_number,
-                    stop_lat: stop.snapped_lat,
-                    stop_lon: stop.snapped_lon,
-                    students_pickup: stop.num_students,
-                    road_type: stop.route_type,
-                    road_name: stop.route_name,
-                    total_students_in_bus: route.totalStudents,
-                    bus_efficiency: route.efficiency,
-                    shift_time: shiftTime,
-                    day_of_week: dayOfWeek
-                });
-            });
-        });
-        
-        const csv = Papa.unparse(exportData);
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement('a');
-        const url = URL.createObjectURL(blob);
-        link.setAttribute('href', url);
-        link.setAttribute('download', `optimized_routes_${shiftTime}_${dayOfWeek}.csv`);
-        link.style.visibility = 'hidden';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-        
-        showToast('Results exported successfully!', 'success');
-        
-    } catch (error) {
-        console.error('❌ Export error:', error);
-        showToast(`Export failed: ${error.message}`, 'error');
-    }
-}
 
 // UI Controls
 function toggleSidebar() {
@@ -1464,7 +1428,10 @@ function getToastIcon(type) {
 window.loadData = loadData;
 window.visualizeData = visualizeData;
 window.optimizeRoutes = optimizeRoutes;
-window.exportResults = exportResults;
+window.exportRouteDataCustomFormat = exportRouteDataCustomFormat;
+window.validateExportData = validateExportData;
+window.toggleFailureDetails = toggleFailureDetails;
+window.analyzeFailures = analyzeFailures;
 window.toggleSidebar = toggleSidebar;
 window.toggleRouteSelector = toggleRouteSelector;
 
@@ -1843,8 +1810,12 @@ async function optimizeRoutes() {
         const results = await getBusOptimizedRoutes();
         console.log('Results received in modern-app.js:', results);
 
+        // CRITICAL: Validate all routes for capacity violations before setting results
+        const maxCapacity = parseInt(document.getElementById('maxCapacity').value) || 55;
+        const validatedResults = validateAndFixCapacityViolations(results, maxCapacity);
+        
         // Set global variable
-        window.optimizationResults = results;
+        window.optimizationResults = validatedResults;
         console.log('Setting window.optimizationResults:', window.optimizationResults);
         
         // Check global variable properly
@@ -1869,16 +1840,21 @@ async function optimizeRoutes() {
         visualizeOptimizedRoutes();
         displayResults();
         
-        document.getElementById('exportBtn').disabled = false;
-        document.getElementById('exportComprehensiveBtn').disabled = false;
-        document.getElementById('exportExcelBtn').disabled = false;
+        document.getElementById('exportCustomBtn').disabled = false;
         
         // Also enable export buttons if results are available
         if (window.optimizationResults && window.optimizationResults.length > 0) {
-            document.getElementById('exportComprehensiveBtn').disabled = false;
-            document.getElementById('exportExcelBtn').disabled = false;
+            document.getElementById('exportCustomBtn').disabled = false;
         }
-        showToast(`Route optimization completed! Generated ${window.optimizationResults.length} efficient routes.`, 'success');
+        // Count and display route failure statistics
+        const failureStats = analyzeRouteFailures(window.optimizationResults);
+        displayRouteFailureStats(failureStats);
+        
+        const successMessage = `Route optimization completed! Generated ${window.optimizationResults.length} efficient routes.`;
+        const failureMessage = failureStats.totalFailures > 0 ? 
+            ` ${failureStats.totalFailures} routes had issues.` : '';
+        
+        showToast(successMessage + failureMessage, failureStats.totalFailures > 0 ? 'warning' : 'success');
         
     } catch (error) {
         showToast(`Optimization failed: ${error.message}`, 'error');
@@ -3462,6 +3438,11 @@ async function createGeographicalClusters(stops, maxCapacity) {
                 if (bearingSpread > 180) bearingSpread = 360 - bearingSpread;
                 
                 const wouldExceedCapacity = currentCluster.totalStudents + studentCount > maxCapacity;
+                
+                // CRITICAL: Strict capacity enforcement - never allow exceeding maxCapacity
+                if (wouldExceedCapacity) {
+                    console.log(`🚫 CAPACITY LIMIT: Cannot add ${studentCount} students to cluster (current: ${currentCluster.totalStudents}, max: ${maxCapacity})`);
+                }
                 const wouldExceedBearingSpread = bearingSpread > dynamicParameters.maxBearingSpread;
                 const wouldExceedDistanceSpread = newMaxDistance - newMinDistance > dynamicParameters.maxDistanceSpread;
                 
@@ -3524,8 +3505,17 @@ async function createGeographicalClusters(stops, maxCapacity) {
     // Assign depots to valid clusters
     validClusters.forEach((cluster, index) => {
         cluster.assignedDepot = findOptimalDepot(cluster);
-        const efficiency = ((cluster.totalStudents / maxCapacity) * 100).toFixed(1);
-        cluster.efficiency = efficiency;
+        // CRITICAL: Validate capacity constraint before calculating efficiency
+        if (cluster.totalStudents > maxCapacity) {
+            console.error(`❌ CAPACITY VIOLATION: Route ${cluster.busId} has ${cluster.totalStudents} students (max: ${maxCapacity})`);
+            // Force split the route if it exceeds capacity
+            cluster.hasCapacityViolation = true;
+            cluster.efficiency = '999.9'; // Mark as invalid
+        } else {
+            const efficiency = ((cluster.totalStudents / maxCapacity) * 100).toFixed(1);
+            cluster.efficiency = efficiency;
+            console.log(`✅ Route ${cluster.busId}: ${cluster.totalStudents}/${maxCapacity} students (${efficiency}%)`);
+        }
         cluster.busId = `Bus ${index + 1}`;
         cluster.totalStudents = cluster.totalStudents;
         cluster.totalDistance = `${Math.min(50, cluster.maxDistance * 1.3).toFixed(1)} km`;
@@ -3537,7 +3527,475 @@ async function createGeographicalClusters(stops, maxCapacity) {
     const totalStudentsInShift = stops.reduce((sum, stop) => sum + parseInt(stop.num_students || 0), 0);
     const maxBusesNeeded = Math.ceil(totalStudentsInShift / maxCapacity);
 
-    return validClusters.slice(0, maxBusesNeeded);
+    // CRITICAL: Split any routes that exceed capacity
+    const finalValidClusters = [];
+    validClusters.forEach(cluster => {
+        if (cluster.totalStudents > maxCapacity) {
+            console.warn(`🔄 Splitting over-capacity route: ${cluster.totalStudents} students`);
+            const splitRoutes = splitOverCapacityRoute(cluster, maxCapacity);
+            finalValidClusters.push(...splitRoutes);
+        } else {
+            finalValidClusters.push(cluster);
+        }
+    });
+
+    console.log(`✅ Final validation: ${finalValidClusters.length} routes, all within ${maxCapacity} student capacity`);
+    return finalValidClusters.slice(0, maxBusesNeeded);
+}
+
+// CRITICAL: Split routes that exceed capacity
+function splitOverCapacityRoute(cluster, maxCapacity) {
+    console.log(`🔄 Splitting route with ${cluster.totalStudents} students (max: ${maxCapacity})`);
+    
+    const splitRoutes = [];
+    let currentRoute = {
+        stops: [],
+        totalStudents: 0,
+        direction: cluster.direction + '-Split1',
+        assignedDepot: cluster.assignedDepot
+    };
+    
+    // Sort stops by distance to maintain route efficiency
+    const sortedStops = [...cluster.stops].sort((a, b) => a.distance - b.distance);
+    
+    sortedStops.forEach((stop, index) => {
+        const studentCount = parseInt(stop.num_students) || 0;
+        
+        // If adding this stop would exceed capacity, finalize current route and start new one
+        if (currentRoute.totalStudents + studentCount > maxCapacity && currentRoute.stops.length > 0) {
+            // Finalize current route
+            const efficiency = ((currentRoute.totalStudents / maxCapacity) * 100).toFixed(1);
+            currentRoute.efficiency = efficiency + '%';
+            currentRoute.busId = `Bus ${splitRoutes.length + 1} (Split)`;
+            currentRoute.totalDistance = calculateRouteDistance(currentRoute.stops);
+            currentRoute.routeType = 'split-route';
+            
+            splitRoutes.push(currentRoute);
+            console.log(`✅ Created split route: ${currentRoute.stops.length} stops, ${currentRoute.totalStudents} students`);
+            
+            // Start new route
+            currentRoute = {
+                stops: [],
+                totalStudents: 0,
+                direction: cluster.direction + `-Split${splitRoutes.length + 1}`,
+                assignedDepot: cluster.assignedDepot
+            };
+        }
+        
+        // Add stop to current route
+        currentRoute.stops.push(stop);
+        currentRoute.totalStudents += studentCount;
+    });
+    
+    // Finalize the last route if it has stops
+    if (currentRoute.stops.length > 0) {
+        const efficiency = ((currentRoute.totalStudents / maxCapacity) * 100).toFixed(1);
+        currentRoute.efficiency = efficiency + '%';
+        currentRoute.busId = `Bus ${splitRoutes.length + 1} (Split)`;
+        currentRoute.totalDistance = calculateRouteDistance(currentRoute.stops);
+        currentRoute.routeType = 'split-route';
+        
+        splitRoutes.push(currentRoute);
+        console.log(`✅ Created final split route: ${currentRoute.stops.length} stops, ${currentRoute.totalStudents} students`);
+    }
+    
+    console.log(`✅ Split complete: ${cluster.totalStudents} students → ${splitRoutes.length} routes`);
+    return splitRoutes;
+}
+
+// Helper function to calculate route distance
+function calculateRouteDistance(stops) {
+    if (stops.length <= 1) return '0.0 km';
+    
+    let totalDistance = 0;
+    for (let i = 0; i < stops.length - 1; i++) {
+        totalDistance += calculateHaversineDistance(
+            parseFloat(stops[i].lat), parseFloat(stops[i].lng),
+            parseFloat(stops[i + 1].lat), parseFloat(stops[i + 1].lng)
+        );
+    }
+    
+    return `${totalDistance.toFixed(1)} km`;
+}
+
+// CRITICAL: Final validation and fixing of capacity violations
+function validateAndFixCapacityViolations(routes, maxCapacity) {
+    console.log(`🔍 FINAL CAPACITY VALIDATION: Checking ${routes.length} routes against ${maxCapacity} student limit`);
+    
+    const validatedRoutes = [];
+    let totalViolations = 0;
+    
+    routes.forEach((route, index) => {
+        const routeStudentCount = route.stops.reduce((sum, stop) => sum + (parseInt(stop.num_students) || 0), 0);
+        
+        if (routeStudentCount > maxCapacity) {
+            totalViolations++;
+            console.error(`❌ CAPACITY VIOLATION DETECTED: Route ${index + 1} has ${routeStudentCount} students (max: ${maxCapacity})`);
+            
+            // Split the violating route
+            const mockCluster = {
+                stops: route.stops,
+                totalStudents: routeStudentCount,
+                direction: route.busId || `Route_${index + 1}`,
+                assignedDepot: route.depot
+            };
+            
+            const splitRoutes = splitOverCapacityRoute(mockCluster, maxCapacity);
+            
+            // Convert split routes back to the expected format
+            splitRoutes.forEach((splitRoute, splitIndex) => {
+                validatedRoutes.push({
+                    ...route,
+                    busId: `${route.busId || `Route_${index + 1}`}_Split${splitIndex + 1}`,
+                    stops: splitRoute.stops,
+                    totalStudents: splitRoute.totalStudents,
+                    efficiency: splitRoute.efficiency,
+                    totalDistance: splitRoute.totalDistance,
+                    routeType: 'capacity-corrected',
+                    wasCapacityViolation: true
+                });
+            });
+            
+            console.log(`✅ Split violating route into ${splitRoutes.length} compliant routes`);
+        } else {
+            // Route is within capacity, keep as is
+            validatedRoutes.push({
+                ...route,
+                totalStudents: routeStudentCount, // Update with calculated value
+                efficiency: route.efficiency || `${((routeStudentCount / maxCapacity) * 100).toFixed(1)}%`
+            });
+            console.log(`✅ Route ${index + 1}: ${routeStudentCount}/${maxCapacity} students - VALID`);
+        }
+    });
+    
+    if (totalViolations > 0) {
+        console.warn(`⚠️ Fixed ${totalViolations} capacity violations. Routes increased from ${routes.length} to ${validatedRoutes.length}`);
+        showToast(`Fixed ${totalViolations} capacity violations. Routes split to maintain ${maxCapacity} student limit.`, 'warning');
+    } else {
+        console.log(`✅ All ${routes.length} routes are within capacity limits`);
+    }
+    
+    return validatedRoutes;
+}
+
+// Route Failure Analysis and Display System
+function analyzeRouteFailures(routes) {
+    console.log('🔍 ANALYZING ROUTE FAILURES...');
+    
+    const stats = {
+        totalRoutes: routes.length,
+        successfulRoutes: 0,
+        totalFailures: 0,
+        capacityViolations: 0,
+        accessibilityWarnings: 0,
+        reroutingFailures: 0,
+        validationErrors: 0,
+        splitRoutes: 0,
+        failureDetails: [],
+        warningDetails: []
+    };
+    
+    routes.forEach((route, index) => {
+        let routeHasIssues = false;
+        let issueTypes = [];
+        
+        // Check for capacity violations
+        if (route.wasCapacityViolation || route.hasCapacityViolation) {
+            stats.capacityViolations++;
+            issueTypes.push('Capacity Violation');
+            routeHasIssues = true;
+        }
+        
+        // Check for split routes (from capacity violations)
+        if (route.routeType === 'capacity-corrected' || route.busId.includes('Split')) {
+            stats.splitRoutes++;
+            issueTypes.push('Route Split');
+        }
+        
+        // Check for accessibility warnings
+        if (route.hasAccessibilityWarnings || route.warningMessage) {
+            stats.accessibilityWarnings++;
+            issueTypes.push('Road Accessibility');
+            routeHasIssues = true;
+            
+            stats.warningDetails.push({
+                routeId: route.busId,
+                issue: 'Accessibility Warning',
+                details: route.warningMessage || 'Road width or accessibility concerns',
+                severity: 'warning'
+            });
+        }
+        
+        // Check for rerouting failures
+        if (route.reroutingFailed) {
+            stats.reroutingFailures++;
+            issueTypes.push('Rerouting Failed');
+            routeHasIssues = true;
+            
+            stats.failureDetails.push({
+                routeId: route.busId,
+                issue: 'Rerouting Failed',
+                details: `Failed after ${route.reroutingAttempts?.length || 0} attempts: ${route.reroutingError || 'Unknown error'}`,
+                severity: 'error'
+            });
+        }
+        
+        // Check for validation errors
+        if (route.accessibility && route.accessibility.issues && route.accessibility.issues.length > 0) {
+            const hasErrors = route.accessibility.issues.some(issue => 
+                issue.includes('failed') || issue.includes('error') || issue.includes('skipped')
+            );
+            if (hasErrors) {
+                stats.validationErrors++;
+                issueTypes.push('Validation Error');
+                routeHasIssues = true;
+                
+                stats.failureDetails.push({
+                    routeId: route.busId,
+                    issue: 'Validation Error',
+                    details: route.accessibility.issues.join(', '),
+                    severity: 'error'
+                });
+            }
+        }
+        
+        // Count total failures
+        if (routeHasIssues) {
+            stats.totalFailures++;
+            console.log(`⚠️ Route ${route.busId} has issues: ${issueTypes.join(', ')}`);
+        } else {
+            stats.successfulRoutes++;
+        }
+        
+        // Log route summary
+        const studentCount = route.totalStudents;
+        const efficiency = route.efficiency;
+        console.log(`📊 Route ${index + 1} (${route.busId}): ${studentCount} students, ${efficiency} efficiency${issueTypes.length > 0 ? ` - Issues: ${issueTypes.join(', ')}` : ' - OK'}`);
+    });
+    
+    console.log('📊 FAILURE ANALYSIS SUMMARY:');
+    console.log(`   Total Routes: ${stats.totalRoutes}`);
+    console.log(`   Successful: ${stats.successfulRoutes}`);
+    console.log(`   With Issues: ${stats.totalFailures}`);
+    console.log(`   Capacity Violations: ${stats.capacityViolations}`);
+    console.log(`   Accessibility Warnings: ${stats.accessibilityWarnings}`);
+    console.log(`   Rerouting Failures: ${stats.reroutingFailures}`);
+    console.log(`   Validation Errors: ${stats.validationErrors}`);
+    console.log(`   Split Routes: ${stats.splitRoutes}`);
+    
+    return stats;
+}
+
+// Display route failure statistics in the UI
+function displayRouteFailureStats(stats) {
+    console.log('📊 DISPLAYING FAILURE STATISTICS...');
+    
+    // Create or update the failure display section
+    let failureSection = document.getElementById('routeFailureStats');
+    if (!failureSection) {
+        failureSection = document.createElement('div');
+        failureSection.id = 'routeFailureStats';
+        failureSection.className = 'sidebar-section';
+        
+        // Insert after metrics section
+        const metricsSection = document.getElementById('metricsSection');
+        if (metricsSection) {
+            metricsSection.parentNode.insertBefore(failureSection, metricsSection.nextSibling);
+        } else {
+            // Fallback: add to sidebar
+            const sidebar = document.getElementById('sidebar');
+            if (sidebar) {
+                sidebar.appendChild(failureSection);
+            }
+        }
+    }
+    
+    // Build the HTML content
+    const successRate = ((stats.successfulRoutes / stats.totalRoutes) * 100).toFixed(1);
+    const hasIssues = stats.totalFailures > 0;
+    
+    failureSection.innerHTML = `
+        <h4><i class="fas fa-exclamation-triangle"></i> Route Status</h4>
+        <style>
+            .failure-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 10px 0; }
+            .failure-stat-card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; background: white; }
+            .failure-stat-card.success { border-color: #10b981; background: #f0fdf4; }
+            .failure-stat-card.warning { border-color: #f59e0b; background: #fffbeb; }
+            .failure-stat-card.error { border-color: #ef4444; background: #fef2f2; }
+            .failure-stat-card.info { border-color: #3b82f6; background: #eff6ff; }
+            .failure-stat-card.has-issues { border-color: #f59e0b; background: #fffbeb; }
+            .failure-stat-icon { text-align: center; font-size: 18px; margin-bottom: 8px; }
+            .failure-stat-value { font-size: 20px; font-weight: bold; text-align: center; }
+            .failure-stat-label { font-size: 12px; text-align: center; color: #6b7280; }
+            .failure-stat-percentage { font-size: 10px; text-align: center; color: #9ca3af; }
+            .failure-details { margin-top: 15px; }
+            .failure-details-content { margin-top: 10px; }
+            .failure-detail-item { padding: 8px; margin: 5px 0; border-radius: 4px; font-size: 12px; }
+            .failure-detail-item.error { background: #fef2f2; border-left: 3px solid #ef4444; }
+            .failure-detail-item.warning { background: #fffbeb; border-left: 3px solid #f59e0b; }
+            .btn-small { padding: 4px 8px; font-size: 12px; }
+        </style>
+        <div class="failure-stats-grid">
+            <div class="failure-stat-card ${hasIssues ? 'has-issues' : 'success'}">
+                <div class="failure-stat-icon">
+                    <i class="fas ${hasIssues ? 'fa-exclamation-triangle' : 'fa-check-circle'}"></i>
+                </div>
+                <div class="failure-stat-content">
+                    <div class="failure-stat-value">${stats.successfulRoutes}/${stats.totalRoutes}</div>
+                    <div class="failure-stat-label">Successful Routes</div>
+                    <div class="failure-stat-percentage">${successRate}% Success Rate</div>
+                </div>
+            </div>
+            
+            ${stats.totalFailures > 0 ? `
+                <div class="failure-stat-card warning">
+                    <div class="failure-stat-icon">
+                        <i class="fas fa-exclamation-circle"></i>
+                    </div>
+                    <div class="failure-stat-content">
+                        <div class="failure-stat-value">${stats.totalFailures}</div>
+                        <div class="failure-stat-label">Routes with Issues</div>
+                    </div>
+                </div>
+            ` : ''}
+            
+            ${stats.capacityViolations > 0 ? `
+                <div class="failure-stat-card error">
+                    <div class="failure-stat-icon">
+                        <i class="fas fa-users"></i>
+                    </div>
+                    <div class="failure-stat-content">
+                        <div class="failure-stat-value">${stats.capacityViolations}</div>
+                        <div class="failure-stat-label">Capacity Violations</div>
+                    </div>
+                </div>
+            ` : ''}
+            
+            ${stats.splitRoutes > 0 ? `
+                <div class="failure-stat-card info">
+                    <div class="failure-stat-icon">
+                        <i class="fas fa-cut"></i>
+                    </div>
+                    <div class="failure-stat-content">
+                        <div class="failure-stat-value">${stats.splitRoutes}</div>
+                        <div class="failure-stat-label">Routes Split</div>
+                    </div>
+                </div>
+            ` : ''}
+            
+            ${stats.accessibilityWarnings > 0 ? `
+                <div class="failure-stat-card warning">
+                    <div class="failure-stat-icon">
+                        <i class="fas fa-road"></i>
+                    </div>
+                    <div class="failure-stat-content">
+                        <div class="failure-stat-value">${stats.accessibilityWarnings}</div>
+                        <div class="failure-stat-label">Road Warnings</div>
+                    </div>
+                </div>
+            ` : ''}
+            
+            ${stats.reroutingFailures > 0 ? `
+                <div class="failure-stat-card error">
+                    <div class="failure-stat-icon">
+                        <i class="fas fa-route"></i>
+                    </div>
+                    <div class="failure-stat-content">
+                        <div class="failure-stat-value">${stats.reroutingFailures}</div>
+                        <div class="failure-stat-label">Rerouting Failures</div>
+                    </div>
+                </div>
+            ` : ''}
+        </div>
+        
+        ${(stats.failureDetails.length > 0 || stats.warningDetails.length > 0) ? `
+            <div class="failure-details">
+                <button class="btn btn-secondary btn-small" onclick="toggleFailureDetails()" id="toggleFailureBtn">
+                    <i class="fas fa-eye"></i> Show Details
+                </button>
+                <div class="failure-details-content" id="failureDetailsContent" style="display: none;">
+                    ${stats.failureDetails.map(detail => `
+                        <div class="failure-detail-item error">
+                            <strong>${detail.routeId}:</strong> ${detail.issue}<br>
+                            <small>${detail.details}</small>
+                        </div>
+                    `).join('')}
+                    ${stats.warningDetails.map(detail => `
+                        <div class="failure-detail-item warning">
+                            <strong>${detail.routeId}:</strong> ${detail.issue}<br>
+                            <small>${detail.details}</small>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        ` : ''}
+    `;
+    
+    // Show the section
+    failureSection.style.display = 'block';
+    
+    // Log summary
+    if (stats.totalFailures > 0) {
+        console.warn(`⚠️ ${stats.totalFailures} routes have issues out of ${stats.totalRoutes} total routes`);
+    } else {
+        console.log(`✅ All ${stats.totalRoutes} routes generated successfully`);
+    }
+}
+
+// Toggle failure details visibility
+function toggleFailureDetails() {
+    const content = document.getElementById('failureDetailsContent');
+    const button = document.getElementById('toggleFailureBtn');
+    
+    if (content && button) {
+        const isVisible = content.style.display !== 'none';
+        content.style.display = isVisible ? 'none' : 'block';
+        button.innerHTML = isVisible ? 
+            '<i class="fas fa-eye"></i> Show Details' : 
+            '<i class="fas fa-eye-slash"></i> Hide Details';
+    }
+}
+
+// Quick console function to analyze current failures
+function analyzeFailures() {
+    if (!window.optimizationResults) {
+        console.log('❌ No optimization results available. Run optimization first.');
+        return;
+    }
+    
+    const stats = analyzeRouteFailures(window.optimizationResults);
+    
+    console.log('\n📊 ROUTE FAILURE ANALYSIS:');
+    console.log('='.repeat(50));
+    console.log(`📈 Success Rate: ${((stats.successfulRoutes / stats.totalRoutes) * 100).toFixed(1)}%`);
+    console.log(`✅ Successful Routes: ${stats.successfulRoutes}/${stats.totalRoutes}`);
+    console.log(`❌ Failed Routes: ${stats.totalFailures}`);
+    
+    if (stats.totalFailures > 0) {
+        console.log('\n🔍 FAILURE BREAKDOWN:');
+        if (stats.capacityViolations > 0) console.log(`   🚌 Capacity Violations: ${stats.capacityViolations}`);
+        if (stats.splitRoutes > 0) console.log(`   ✂️ Routes Split: ${stats.splitRoutes}`);
+        if (stats.accessibilityWarnings > 0) console.log(`   🛣️ Road Warnings: ${stats.accessibilityWarnings}`);
+        if (stats.reroutingFailures > 0) console.log(`   🔄 Rerouting Failures: ${stats.reroutingFailures}`);
+        if (stats.validationErrors > 0) console.log(`   ⚠️ Validation Errors: ${stats.validationErrors}`);
+        
+        if (stats.failureDetails.length > 0) {
+            console.log('\n❌ CRITICAL FAILURES:');
+            stats.failureDetails.forEach(failure => {
+                console.log(`   ${failure.routeId}: ${failure.issue} - ${failure.details}`);
+            });
+        }
+        
+        if (stats.warningDetails.length > 0) {
+            console.log('\n⚠️ WARNINGS:');
+            stats.warningDetails.forEach(warning => {
+                console.log(`   ${warning.routeId}: ${warning.issue} - ${warning.details}`);
+            });
+        }
+    }
+    
+    console.log('='.repeat(50));
+    return stats;
 }
 
 // ✅ INTEGRATED: Finalize cluster with straightness metrics
@@ -3882,6 +4340,8 @@ async function createCorridorBasedRoutes(stops, maxCapacity) {
             const students = parseInt(stop.num_students);
             
             if (currentRoute.totalStudents + students > maxCapacity && currentRoute.stops.length > 0) {
+                // CRITICAL: Strict capacity enforcement
+                console.log(`🚫 CAPACITY LIMIT: Corridor route ${routes.length + 1} cannot exceed ${maxCapacity} students (current: ${currentRoute.totalStudents}, adding: ${students})`);
                 // Finalize current route
                 finalizeCorridorRoute(currentRoute, routes.length + 1);
                 routes.push(currentRoute);
@@ -3968,6 +4428,8 @@ async function createRoutesBySegment(stops, maxCapacity) {
             const students = parseInt(stop.num_students);
             
             if (currentRoute.totalStudents + students > maxCapacity && currentRoute.stops.length > 0) {
+                // CRITICAL: Strict capacity enforcement
+                console.log(`🚫 CAPACITY LIMIT: Segment route ${routes.length + 1} cannot exceed ${maxCapacity} students (current: ${currentRoute.totalStudents}, adding: ${students})`);
                 finalizeSegmentRoute(currentRoute, routes.length + 1, band.name);
                 routes.push(currentRoute);
                 
@@ -4296,8 +4758,11 @@ function buildRoutesFromBucket(buckets, key, maxCapacity, depot) {
             let best = null, bestGain = Infinity;
             for (let i = 0; i < candidates.length; i++) {
                 const cand = candidates[i];
-                // capacity early
-                if ((load + (cand.students || 1)) > maxCapacity) continue;
+                // CRITICAL: Strict capacity enforcement
+                if ((load + (cand.students || 1)) > maxCapacity) {
+                    console.log(`🚫 CAPACITY LIMIT: Advanced algorithm cannot add ${cand.students || 1} students (current load: ${load}, max: ${maxCapacity})`);
+                    continue;
+                }
 
                 // monotone progress toward DEST
                 if (cand.r > cur.r - MONOTONE_DELTA_M) continue;
@@ -6078,528 +6543,252 @@ function calculateRouteDistance(stops) {
 // ===== COMPREHENSIVE EXCEL EXPORT FUNCTION =====
 
 // Export all data in one comprehensive Excel file
-async function exportComprehensiveExcel() {
+
+
+
+// ... existing code ...
+
+// ===== COMPREHENSIVE CSV EXPORT FUNCTIONS =====
+
+// Export route data in the specific format requested by user
+async function exportRouteDataCustomFormat() {
     try {
-        console.log('Excel export function called');
-        console.log('XLSX library available:', typeof XLSX !== 'undefined');
-        
         if (!window.optimizationResults || !window.optimizationResults.length) {
             showToast('No optimization results to export. Please run optimization first.', 'error');
             return;
         }
 
-        console.log('Optimization results found:', window.optimizationResults.length, 'routes');
-        showToast('Preparing comprehensive Excel export...', 'info');
+        showToast('Preparing route data export...', 'info');
         
         // Get current timestamp for file naming
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
         const shiftTime = AppState.currentShift || 'unknown';
         const dayOfWeek = AppState.currentDay || 'unknown';
         
-        console.log('Export parameters:', { timestamp, shiftTime, dayOfWeek });
+        // Create the custom format data
+        const exportData = createCustomRouteExportData();
         
-        // Create comprehensive export data
-        const exportData = createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp);
-        console.log('Export data created:', {
-            routeSummary: exportData.routeSummary.length,
-            stopDetails: exportData.stopDetails.length,
-            assignmentDetails: exportData.assignmentDetails.length,
-            performanceMetrics: exportData.performanceMetrics.length
-        });
+        // Generate and download the CSV file
+        const csv = Papa.unparse(exportData);
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', `Route_Data_${shiftTime}_${dayOfWeek}_${timestamp}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
         
-        // Validate export data
-        if (!exportData.routeSummary || !exportData.stopDetails || !exportData.assignmentDetails || !exportData.performanceMetrics) {
-            throw new Error('Export data structure is invalid');
-        }
-        
-        if (exportData.routeSummary.length === 0) {
-            throw new Error('No route data available for export');
-        }
-        
-        // Generate and download Excel file
-        await generateExcelFile(exportData, shiftTime, dayOfWeek, timestamp);
-        
-        showToast('Comprehensive Excel export completed! Check your downloads.', 'success');
-        
-        // Show additional information about potential download issues
-        setTimeout(() => {
-            showToast('If download didn\'t start, check browser download settings or try the CSV export.', 'info');
-        }, 2000);
+        showToast('Route data export completed! Check your downloads.', 'success');
         
     } catch (error) {
-        console.error('Excel export error:', error);
-        showToast(`Excel export failed: ${error.message}`, 'error');
+        console.error('Export error:', error);
+        showToast(`Export failed: ${error.message}`, 'error');
     }
 }
 
-// Create comprehensive Excel data with enhanced stop details
-function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
-    console.log('🔍 Starting createComprehensiveExcelData...');
-    console.log('🔍 Input parameters:', { shiftTime, dayOfWeek, timestamp });
+// Create custom route export data according to user specifications
+function createCustomRouteExportData() {
+    console.log('🔍 EXPORT DATA VERIFICATION:');
     console.log('🔍 window.optimizationResults:', window.optimizationResults);
+    console.log('🔍 Number of routes:', window.optimizationResults?.length || 0);
     
-    const routeSummaryData = [];
-    const stopDetailsData = [];
-    const performanceMetricsData = [];
-    const assignmentDetailsData = [];
-    
-    let totalStudents = 0;
-    let totalStops = 0;
-    let totalDistance = 0;
-    let totalEfficiency = 0;
-    let routesWithWarnings = 0;
-    
-    // Validate optimization results
-    if (!window.optimizationResults || !Array.isArray(window.optimizationResults) || window.optimizationResults.length === 0) {
-        console.error('❌ No valid optimization results found!');
+    if (!window.optimizationResults || window.optimizationResults.length === 0) {
+        console.error('❌ No optimization results available for export');
         throw new Error('No optimization results available for export');
     }
     
-    console.log(`🔍 Processing ${window.optimizationResults.length} routes...`);
+    const exportData = [];
     
-    // Process each route
-    for (let routeIndex = 0; routeIndex < window.optimizationResults.length; routeIndex++) {
-        const route = window.optimizationResults[routeIndex];
-        console.log(`🔍 Processing route ${routeIndex + 1}:`, route);
+    // Find the maximum number of stops across all routes to determine column count
+    const maxStops = Math.max(...window.optimizationResults.map(route => route.stops?.length || 0));
+    console.log(`🔍 Maximum stops across all routes: ${maxStops}`);
+    
+    window.optimizationResults.forEach((route, routeIndex) => {
+        console.log(`🔍 Processing route ${routeIndex + 1}:`, {
+            busId: route.busId,
+            stopsCount: route.stops?.length || 0,
+            totalStudents: route.totalStudents,
+            hasStops: !!route.stops
+        });
         
         // Validate route structure
-        if (!route || !route.stops || !Array.isArray(route.stops)) {
-            console.warn(`⚠️ Route ${routeIndex + 1} has invalid structure, skipping...`);
-            continue;
+        if (!route.stops || !Array.isArray(route.stops)) {
+            console.warn(`⚠️ Route ${routeIndex + 1} has invalid stops structure:`, route.stops);
+            return; // Skip this route
         }
         
-        let cumulativeDistance = 0;
-        let cumulativeStudents = 0;
-        
-        // Calculate route metrics with safe parsing
-        const routeDistance = parseFloat(route.totalDistance) || 0;
-        const routeEfficiency = parseFloat(route.efficiency) || 0;
-        const hasWarnings = route.hasAccessibilityWarnings || route.warningMessage;
-        const routeStudents = parseInt(route.totalStudents) || 0;
-        const routeStops = route.stops.length;
-        
-        totalStudents += routeStudents;
-        totalStops += routeStops;
-        totalDistance += routeDistance;
-        totalEfficiency += routeEfficiency;
-        if (hasWarnings) routesWithWarnings++;
-        
-        console.log(`🔍 Route ${routeIndex + 1} metrics:`, {
-            students: routeStudents,
-            stops: routeStops,
-            distance: routeDistance,
-            efficiency: routeEfficiency
-        });
-        
-        // Route Summary Data
-        const routeSummary = {
-            route_id: route.busId || `Route_${routeIndex + 1}`,
-            route_name: route.busId || `Route_${routeIndex + 1}`,
-            depot: route.depot || 'Default Depot',
-            total_stops: routeStops,
-            total_students: routeStudents,
-            efficiency_percentage: routeEfficiency.toFixed(2),
-            total_distance_km: routeDistance.toFixed(2),
-            estimated_time_min: route.estimatedTime || 'N/A',
-            route_type: route.routeType || 'optimized',
-            direction: route.direction || 'MIXED',
-            accessibility_status: hasWarnings ? 'Warnings' : 'Valid',
-            warnings: route.warningMessage || '',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
-            export_timestamp: timestamp
+        const routeData = {
+            'Bus no': route.busId || `Route_${routeIndex + 1}`,
+            'Route Name': route.busId || `Route_${routeIndex + 1}` // Include route name after bus no
         };
         
-        routeSummaryData.push(routeSummary);
-        console.log(`✅ Added route summary for route ${routeIndex + 1}`);
+        console.log(`🔍 Route ${routeIndex + 1} stops:`, route.stops.map((stop, idx) => ({
+            index: idx,
+            cluster_number: stop.cluster_number,
+            num_students: stop.num_students,
+            snapped_lat: stop.snapped_lat,
+            snapped_lon: stop.snapped_lon,
+            lat: stop.lat,
+            lng: stop.lng
+        })));
         
-        // Process stops for this route with enhanced details
-        for (let stopIndex = 0; stopIndex < route.stops.length; stopIndex++) {
-            const stop = route.stops[stopIndex];
+        // Add stop columns based on the number of stops in this route
+        for (let stopIndex = 0; stopIndex < maxStops; stopIndex++) {
+            const stopNum = stopIndex + 1;
             
-            // Validate stop structure
-            if (!stop) {
-                console.warn(`⚠️ Stop ${stopIndex + 1} in route ${routeIndex + 1} is null, skipping...`);
-                continue;
-            }
-            
-            const studentsAtStop = parseInt(stop.num_students) || 0;
-            cumulativeStudents += studentsAtStop;
-            
-            // Calculate distance to next stop
-            let distanceToNext = 0;
-            if (stopIndex < route.stops.length - 1) {
-                const nextStop = route.stops[stopIndex + 1];
-                if (nextStop && stop.snapped_lat && stop.snapped_lon && nextStop.snapped_lat && nextStop.snapped_lon) {
-                    distanceToNext = calculateHaversineDistance(
-                        parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon),
-                        parseFloat(nextStop.snapped_lat), parseFloat(nextStop.snapped_lon)
-                    );
-                    cumulativeDistance += distanceToNext;
-                }
-            }
-            
-            // Enhanced Stop Details Data
-            const stopDetail = {
-                route_id: route.busId || `Route_${routeIndex + 1}`,
-                route_name: route.busId || `Route_${routeIndex + 1}`,
-                depot: route.depot || 'Default Depot',
-                stop_sequence: stopIndex + 1,
-                cluster_number: stop.cluster_number || stopIndex + 1,
-                stop_name: `Stop ${stop.cluster_number || stopIndex + 1}`,
-                stop_address: stop.address || stop.original_address || 'Unknown',
-                original_lat: stop.lat || stop.snapped_lat || 0,
-                original_lon: stop.lng || stop.snapped_lon || 0,
-                snapped_lat: stop.snapped_lat || stop.lat || 0,
-                snapped_lon: stop.snapped_lon || stop.lng || 0,
-                students_pickup: studentsAtStop,
-                road_type: stop.route_type || 'Unknown',
-                road_name: stop.route_name || 'Unknown',
-                snap_distance_meters: stop.snap_distance || 0,
-                distance_to_next_stop_km: distanceToNext.toFixed(3),
-                cumulative_distance_km: cumulativeDistance.toFixed(3),
-                cumulative_students: cumulativeStudents,
-                estimated_pickup_time: stop.estimatedTime || 'N/A',
-                accessibility_status: stop.accessibilityStatus || 'Valid',
-                shift_time: shiftTime,
-                day_of_week: dayOfWeek,
-                export_timestamp: timestamp
-            };
-            
-            stopDetailsData.push(stopDetail);
-            
-            // Assignment Details Data (one row per student group)
-            if (studentsAtStop > 0) {
-                const assignmentDetail = {
-                    route_id: route.busId || `Route_${routeIndex + 1}`,
-                    route_name: route.busId || `Route_${routeIndex + 1}`,
-                    depot: route.depot || 'Default Depot',
-                    stop_sequence: stopIndex + 1,
-                    stop_name: `Stop ${stop.cluster_number || stopIndex + 1}`,
-                    stop_address: stop.address || stop.original_address || 'Unknown',
-                    students_assigned: studentsAtStop,
-                    assignment_type: 'Pickup',
-                    bus_capacity: route.maxCapacity || 55,
-                    current_load: cumulativeStudents,
-                    load_percentage: ((cumulativeStudents / (route.maxCapacity || 55)) * 100).toFixed(1),
-                    distance_from_depot_km: cumulativeDistance.toFixed(3),
-                    estimated_time_from_depot_min: (cumulativeDistance * 2).toFixed(1), // Rough estimate
-                    shift_time: shiftTime,
-                    day_of_week: dayOfWeek,
-                    export_timestamp: timestamp
-                };
+            if (stopIndex < route.stops.length) {
+                const stop = route.stops[stopIndex];
                 
-                assignmentDetailsData.push(assignmentDetail);
+                // Verify stop data
+                console.log(`🔍 Stop ${stopNum} data:`, {
+                    cluster_number: stop.cluster_number,
+                    num_students: stop.num_students,
+                    snapped_lat: stop.snapped_lat,
+                    snapped_lon: stop.snapped_lon,
+                    lat: stop.lat,
+                    lng: stop.lng
+                });
+                
+                routeData[`Stop Name${stopNum}`] = `Stop ${stop.cluster_number || stopIndex + 1}`;
+                routeData[`Student count stop ${stopNum}`] = parseInt(stop.num_students) || 0;
+                routeData[`stop lat ${stopNum}`] = parseFloat(stop.snapped_lat) || parseFloat(stop.lat) || 0;
+                routeData[`stop lon ${stopNum}`] = parseFloat(stop.snapped_lon) || parseFloat(stop.lng) || 0;
+            } else {
+                // Empty cells for routes with fewer stops
+                routeData[`Stop Name${stopNum}`] = '';
+                routeData[`Student count stop ${stopNum}`] = '';
+                routeData[`stop lat ${stopNum}`] = '';
+                routeData[`stop lon ${stopNum}`] = '';
             }
         }
         
-        console.log(`✅ Processed route ${routeIndex + 1}: ${route.stops.length} stops, ${routeStudents} students`);
-    }
-    
-    // Performance Metrics Data
-    const avgEfficiency = totalEfficiency / window.optimizationResults.length;
-    const avgDistance = totalDistance / window.optimizationResults.length;
-    const avgStops = totalStops / window.optimizationResults.length;
-    
-    performanceMetricsData.push(
-        {
-            metric_name: 'Total Routes',
-            metric_value: window.optimizationResults.length,
-            metric_unit: 'routes',
-            calculation_method: 'Count',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
-            export_timestamp: timestamp
-        },
-        {
-            metric_name: 'Total Stops',
-            metric_value: totalStops,
-            metric_unit: 'stops',
-            calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
-            export_timestamp: timestamp
-        },
-        {
-            metric_name: 'Total Students',
-            metric_value: totalStudents,
-            metric_unit: 'students',
-            calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
-            export_timestamp: timestamp
-        },
-        {
-            metric_name: 'Average Efficiency',
-            metric_value: avgEfficiency.toFixed(2),
-            metric_unit: '%',
-            calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
-            export_timestamp: timestamp
-        },
-        {
-            metric_name: 'Total Distance',
-            metric_value: totalDistance.toFixed(2),
-            metric_unit: 'km',
-            calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
-            export_timestamp: timestamp
-        },
-        {
-            metric_name: 'Average Distance per Route',
-            metric_value: avgDistance.toFixed(2),
-            metric_unit: 'km',
-            calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
-            export_timestamp: timestamp
-        },
-        {
-            metric_name: 'Average Stops per Route',
-            metric_value: avgStops.toFixed(1),
-            metric_unit: 'stops',
-            calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
-            export_timestamp: timestamp
-        },
-        {
-            metric_name: 'Routes with Warnings',
-            metric_value: routesWithWarnings,
-            metric_unit: 'routes',
-            calculation_method: 'Count',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
-            export_timestamp: timestamp
-        },
-        {
-            metric_name: 'Accessibility Compliance Rate',
-            metric_value: ((window.optimizationResults.length - routesWithWarnings) / window.optimizationResults.length * 100).toFixed(1),
-            metric_unit: '%',
-            calculation_method: 'Percentage',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
-            export_timestamp: timestamp
-        }
-    );
-    
-    console.log('📊 Final data summary:');
-    console.log('   - Route Summary:', routeSummaryData.length, 'rows');
-    console.log('   - Stop Details:', stopDetailsData.length, 'rows');
-    console.log('   - Assignment Details:', assignmentDetailsData.length, 'rows');
-    console.log('   - Performance Metrics:', performanceMetricsData.length, 'rows');
-    
-    // Validate that we have data
-    if (routeSummaryData.length === 0) {
-        console.error('❌ No route summary data generated!');
-        throw new Error('No route data available for export');
-    }
-    
-    if (stopDetailsData.length === 0) {
-        console.warn('⚠️ No stop details data generated!');
-    }
-    
-    if (assignmentDetailsData.length === 0) {
-        console.warn('⚠️ No assignment details data generated!');
-    }
-    
-    if (performanceMetricsData.length === 0) {
-        console.warn('⚠️ No performance metrics data generated!');
-    }
-    
-    const result = {
-        routeSummary: routeSummaryData,
-        stopDetails: stopDetailsData,
-        assignmentDetails: assignmentDetailsData,
-        performanceMetrics: performanceMetricsData
-    };
-    
-    console.log('✅ createComprehensiveExcelData completed successfully');
-    return result;
-}
-
-// Generate Excel file with multiple sheets
-async function generateExcelFile(exportData, shiftTime, dayOfWeek, timestamp) {
-    console.log('🔧 generateExcelFile called with parameters:', { shiftTime, dayOfWeek, timestamp });
-    console.log('🔧 Export data structure:', {
-        routeSummary: exportData.routeSummary?.length || 0,
-        stopDetails: exportData.stopDetails?.length || 0,
-        assignmentDetails: exportData.assignmentDetails?.length || 0,
-        performanceMetrics: exportData.performanceMetrics?.length || 0
+        // Add totals
+        const totalStops = route.stops.length;
+        const totalStudents = route.stops.reduce((sum, stop) => sum + (parseInt(stop.num_students) || 0), 0);
+        
+        console.log(`🔍 Route ${routeIndex + 1} totals:`, {
+            totalStops,
+            totalStudents,
+            calculatedFromStops: totalStudents,
+            routeTotalStudents: route.totalStudents
+        });
+        
+        routeData['Total stops'] = totalStops;
+        routeData['Total students'] = totalStudents;
+        
+        exportData.push(routeData);
     });
     
-    // Validate export data
-    if (!exportData || typeof exportData !== 'object') {
-        throw new Error('Invalid export data structure');
+    console.log('🔍 Final export data:', exportData);
+    console.log(`✅ Export data created with ${exportData.length} routes`);
+    
+    return exportData;
+}
+
+// Validation function to check data integrity
+function validateExportData() {
+    console.log('🔍 VALIDATION: Starting export data validation...');
+    
+    if (!window.optimizationResults) {
+        console.error('❌ No optimization results found');
+        return false;
     }
     
-    // Create a workbook with multiple sheets
-    const workbook = {
-        SheetNames: ['Route Summary', 'Stop Details', 'Assignment Details', 'Performance Metrics'],
-        Sheets: {}
-    };
+    console.log(`🔍 VALIDATION: Found ${window.optimizationResults.length} routes`);
     
-    // Convert each dataset to worksheet format
-    const sheets = [
-        { name: 'Route Summary', data: exportData.routeSummary || [] },
-        { name: 'Stop Details', data: exportData.stopDetails || [] },
-        { name: 'Assignment Details', data: exportData.assignmentDetails || [] },
-        { name: 'Performance Metrics', data: exportData.performanceMetrics || [] }
-    ];
+    // Check if data matches what's on the map
+    let totalExportedStudents = 0;
+    let totalExportedStops = 0;
+    let validationIssues = [];
     
-    console.log('🔧 Processing sheets:', sheets.map(s => ({ name: s.name, rows: s.data.length })));
-    
-    let processedSheets = 0;
-    
-    // Process each sheet
-    sheets.forEach((sheet, sheetIndex) => {
-        console.log(`🔧 Processing sheet "${sheet.name}" (${sheetIndex + 1}/${sheets.length})`);
+    window.optimizationResults.forEach((route, routeIndex) => {
+        console.log(`🔍 VALIDATION: Route ${routeIndex + 1}:`, {
+            busId: route.busId,
+            stopsCount: route.stops?.length || 0,
+            totalStudents: route.totalStudents
+        });
         
-        if (!sheet.data || !Array.isArray(sheet.data) || sheet.data.length === 0) {
-            console.warn(`⚠️ Sheet "${sheet.name}" has no data!`);
+        if (!route.stops || !Array.isArray(route.stops)) {
+            validationIssues.push(`Route ${routeIndex + 1}: Invalid stops structure`);
             return;
         }
         
-        const worksheet = {};
-        const headers = Object.keys(sheet.data[0]);
+        totalExportedStops += route.stops.length;
         
-        console.log(`🔧 Sheet "${sheet.name}" has ${sheet.data.length} rows and ${headers.length} columns`);
-        console.log(`🔧 Headers:`, headers);
-        
-        // Add headers
-        headers.forEach((header, colIndex) => {
-            const cellRef = String.fromCharCode(65 + colIndex) + '1';
-            worksheet[cellRef] = { v: header, t: 's' };
-        });
-        
-        // Add data rows
-        sheet.data.forEach((row, rowIndex) => {
-            headers.forEach((header, colIndex) => {
-                const cellRef = String.fromCharCode(65 + colIndex) + (rowIndex + 2);
-                const value = row[header];
-                
-                // Handle different data types
-                let cellType = 's'; // string by default
-                if (typeof value === 'number') {
-                    cellType = 'n';
-                } else if (typeof value === 'boolean') {
-                    cellType = 'b';
-                }
-                
-                worksheet[cellRef] = { 
-                    v: value, 
-                    t: cellType 
-                };
+        route.stops.forEach((stop, stopIndex) => {
+            const studentCount = parseInt(stop.num_students) || 0;
+            totalExportedStudents += studentCount;
+            
+            console.log(`🔍 VALIDATION: Route ${routeIndex + 1}, Stop ${stopIndex + 1}:`, {
+                cluster_number: stop.cluster_number,
+                num_students: studentCount,
+                hasCoordinates: !!(stop.snapped_lat && stop.snapped_lon) || !!(stop.lat && stop.lng),
+                snapped_lat: stop.snapped_lat,
+                snapped_lon: stop.snapped_lon,
+                lat: stop.lat,
+                lng: stop.lng
             });
+            
+            // Check for missing critical data
+            if (!stop.cluster_number && !stopIndex) {
+                validationIssues.push(`Route ${routeIndex + 1}, Stop ${stopIndex + 1}: Missing cluster number`);
+            }
+            
+            if (studentCount === 0) {
+                validationIssues.push(`Route ${routeIndex + 1}, Stop ${stopIndex + 1}: Zero students`);
+            }
+            
+            if (!stop.snapped_lat && !stop.lat) {
+                validationIssues.push(`Route ${routeIndex + 1}, Stop ${stopIndex + 1}: Missing latitude`);
+            }
+            
+            if (!stop.snapped_lon && !stop.lng) {
+                validationIssues.push(`Route ${routeIndex + 1}, Stop ${stopIndex + 1}: Missing longitude`);
+            }
         });
-        
-        // Set column widths
-        worksheet['!cols'] = headers.map(() => ({ width: 15 }));
-        
-        workbook.Sheets[sheet.name] = worksheet;
-        processedSheets++;
-        
-        console.log(`✅ Sheet "${sheet.name}" processed successfully`);
     });
     
-    console.log(`🔧 Total sheets processed: ${processedSheets}/${sheets.length}`);
+    console.log('🔍 VALIDATION SUMMARY:');
+    console.log(`  - Total routes: ${window.optimizationResults.length}`);
+    console.log(`  - Total stops: ${totalExportedStops}`);
+    console.log(`  - Total students: ${totalExportedStudents}`);
+    console.log(`  - Validation issues: ${validationIssues.length}`);
     
-    if (processedSheets === 0) {
-        throw new Error('No valid sheets were processed for Excel generation');
+    if (validationIssues.length > 0) {
+        console.warn('⚠️ VALIDATION ISSUES:');
+        validationIssues.forEach(issue => console.warn(`  - ${issue}`));
     }
     
-    // Generate Excel file using SheetJS (XLSX)
-    try {
-        console.log('Attempting to generate Excel file...');
+    // Cross-check with original data if available
+    if (AppState.stopsData && AppState.studentData) {
+        const originalTotalStudents = AppState.studentData.reduce((sum, student) => sum + 1, 0);
+        const originalTotalStops = AppState.stopsData.length;
         
-        // Check if XLSX is available
-        if (typeof XLSX === 'undefined') {
-            console.warn('XLSX library not available, falling back to CSV');
-            // Fallback to CSV if XLSX not available
-            await generateMultipleCSVFiles(exportData, shiftTime, dayOfWeek, timestamp);
-            return;
+        console.log('🔍 ORIGINAL DATA COMPARISON:');
+        console.log(`  - Original students: ${originalTotalStudents}`);
+        console.log(`  - Exported students: ${totalExportedStudents}`);
+        console.log(`  - Original stops: ${originalTotalStops}`);
+        console.log(`  - Exported stops: ${totalExportedStops}`);
+        
+        if (Math.abs(originalTotalStudents - totalExportedStudents) > 5) {
+            console.warn(`⚠️ Student count mismatch: Original ${originalTotalStudents} vs Exported ${totalExportedStudents}`);
         }
-        
-        console.log('XLSX library available, generating Excel buffer...');
-        const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-        console.log('Excel buffer generated, size:', excelBuffer.length, 'bytes');
-        
-        const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-        console.log('Blob created, size:', blob.size, 'bytes');
-        
-        // Check if browser supports download attribute
-        const supportsDownload = 'download' in document.createElement('a');
-        console.log('Browser supports download attribute:', supportsDownload);
-        
-        const url = URL.createObjectURL(blob);
-        console.log('Object URL created:', url);
-        
-        const link = document.createElement('a');
-        link.href = url;
-        
-        if (supportsDownload) {
-            link.download = `Transport_Analysis_${shiftTime}_${dayOfWeek}_${timestamp}.xlsx`;
-            console.log('Download filename:', link.download);
-        } else {
-            // Fallback for browsers that don't support download attribute
-            console.warn('Download attribute not supported, opening in new window');
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-        }
-        
-        link.style.display = 'none';
-        
-        // Add link to DOM, click it, and remove it
-        document.body.appendChild(link);
-        
-        // Try to trigger download with user interaction
-        try {
-            link.click();
-            console.log('Download link clicked successfully');
-        } catch (clickError) {
-            console.warn('Direct click failed, trying alternative method:', clickError);
-            // Alternative method using dispatchEvent
-            const clickEvent = new MouseEvent('click', {
-                view: window,
-                bubbles: true,
-                cancelable: true
-            });
-            link.dispatchEvent(clickEvent);
-        }
-        
-        // Clean up
-        setTimeout(() => {
-            document.body.removeChild(link);
-            URL.revokeObjectURL(url);
-        }, 100);
-        
-        // Alternative download method if the first one doesn't work
-        setTimeout(() => {
-            console.log('Attempting alternative download method...');
-            const altLink = document.createElement('a');
-            altLink.href = URL.createObjectURL(blob);
-            altLink.download = `Transport_Analysis_${shiftTime}_${dayOfWeek}_${timestamp}.xlsx`;
-            altLink.style.display = 'none';
-            document.body.appendChild(altLink);
-            altLink.click();
-            document.body.removeChild(altLink);
-            URL.revokeObjectURL(altLink.href);
-            console.log('Alternative download method completed');
-        }, 1000);
-        
-    } catch (error) {
-        console.error('Error generating Excel file:', error);
-        console.warn('Falling back to CSV export');
-        // Fallback to CSV
-        await generateMultipleCSVFiles(exportData, shiftTime, dayOfWeek, timestamp);
     }
+    
+    const isValid = validationIssues.length === 0;
+    console.log(`${isValid ? '✅' : '❌'} VALIDATION ${isValid ? 'PASSED' : 'FAILED'}`);
+    
+    if (isValid) {
+        showToast('✅ Data validation passed - export data is correct', 'success');
+    } else {
+        showToast(`⚠️ Found ${validationIssues.length} validation issues - check console`, 'warning');
+    }
+    
+    return isValid;
 }
-
-// ... existing code ...
-
-// ===== COMPREHENSIVE CSV EXPORT FUNCTIONS =====
 
 // Enhanced Export Results with multiple sheets (CSV version)
 async function exportComprehensiveResults() {
@@ -6865,124 +7054,7 @@ function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
 }
 
 // Export selected routes only
-function exportSelectedRoutes() {
-    if (!window.optimizationResults || !window.optimizationResults.length) {
-        showToast('No results to export', 'warning');
-        return;
-    }
-    
-    // Get selected routes from UI
-    const selectedRoutes = getSelectedRoutes();
-    if (selectedRoutes.length === 0) {
-        showToast('Please select routes to export', 'warning');
-        return;
-    }
-    
-    // Filter optimization results to selected routes only
-    const filteredResults = window.optimizationResults.filter(route => 
-        selectedRoutes.includes(route.busId)
-    );
-    
-    // Temporarily replace optimization results and export
-    const originalResults = window.optimizationResults;
-    window.optimizationResults = filteredResults;
-    
-    exportComprehensiveResults().then(() => {
-        window.optimizationResults = originalResults;
-    });
-}
 
-// Get selected routes from UI
-function getSelectedRoutes() {
-    const selectedRoutes = [];
-    const checkboxes = document.querySelectorAll('.route-checkbox:checked');
-    checkboxes.forEach(checkbox => {
-        selectedRoutes.push(checkbox.value);
-    });
-    return selectedRoutes;
-}
 
-// Debug function to test Excel export with sample data
-function debugExcelExport() {
-    console.log('🔍 DEBUG: Testing Excel export functionality...');
-    
-    // Check if XLSX is available
-    console.log('🔍 XLSX library available:', typeof XLSX !== 'undefined');
-    
-    // Check if optimization results exist
-    console.log('🔍 Optimization results:', window.optimizationResults);
-    console.log('🔍 Optimization results length:', window.optimizationResults?.length || 0);
-    
-    if (!window.optimizationResults || window.optimizationResults.length === 0) {
-        console.log('🔍 Creating sample data for testing...');
-        
-        // Create sample optimization results for testing
-        window.optimizationResults = [
-            {
-                busId: 'Test_Bus_1',
-                depot: 'Test Depot',
-                totalStudents: 25,
-                totalDistance: 15.5,
-                efficiency: 85.5,
-                estimatedTime: '45 min',
-                routeType: 'test',
-                direction: 'MIXED',
-                maxCapacity: 55,
-                stops: [
-                    {
-                        cluster_number: 1,
-                        num_students: 5,
-                        lat: 13.0088,
-                        lng: 80.0035,
-                        snapped_lat: 13.0088,
-                        snapped_lon: 80.0035,
-                        address: 'Test Address 1',
-                        route_type: 'Primary',
-                        route_name: 'Test Road 1',
-                        snap_distance: 10,
-                        estimatedTime: '08:00',
-                        accessibilityStatus: 'Valid'
-                    },
-                    {
-                        cluster_number: 2,
-                        num_students: 8,
-                        lat: 13.0188,
-                        lng: 80.0135,
-                        snapped_lat: 13.0188,
-                        snapped_lon: 80.0135,
-                        address: 'Test Address 2',
-                        route_type: 'Secondary',
-                        route_name: 'Test Road 2',
-                        snap_distance: 15,
-                        estimatedTime: '08:15',
-                        accessibilityStatus: 'Valid'
-                    },
-                    {
-                        cluster_number: 3,
-                        num_students: 12,
-                        lat: 13.0288,
-                        lng: 80.0235,
-                        snapped_lat: 13.0288,
-                        snapped_lon: 80.0235,
-                        address: 'Test Address 3',
-                        route_type: 'Primary',
-                        route_name: 'Test Road 3',
-                        snap_distance: 20,
-                        estimatedTime: '08:30',
-                        accessibilityStatus: 'Valid'
-                    }
-                ]
-            }
-        ];
-        
-        console.log('🔍 Sample data created:', window.optimizationResults);
-    }
-    
-    // Test the export function
-    console.log('🔍 Testing exportComprehensiveExcel...');
-    exportComprehensiveExcel();
-}
 
-// Make debug function available globally
-window.debugExcelExport = debugExcelExport;
 
