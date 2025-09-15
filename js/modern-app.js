@@ -80,8 +80,29 @@ function initializeApp() {
     initGoogleMap();
     setupEventListeners();
     hideLoading();
+    
+    // Check if optimization results exist and enable export button
+    if (window.optimizationResults && window.optimizationResults.length > 0) {
+        console.log('🔍 Found existing optimization results, enabling export button');
+        enableExportButton();
+    }
+    
     window.googleMapsInitialized = true;
     console.log('✅ Application initialized successfully');
+    
+    // Set up periodic check for export button state (reduced frequency since main fix is implemented)
+    setInterval(checkAndEnableExportButton, 10000); // Check every 10 seconds as backup
+}
+
+// Periodic check to enable export button if results exist
+function checkAndEnableExportButton() {
+    if (window.optimizationResults && window.optimizationResults.length > 0) {
+        const exportBtn = document.getElementById('exportCustomBtn');
+        if (exportBtn && exportBtn.disabled) {
+            console.log('🔄 Auto-enabling export button (results exist)');
+            enableExportButton();
+        }
+    }
 }
 
 // Google Maps Integration
@@ -1432,6 +1453,10 @@ window.exportRouteDataCustomFormat = exportRouteDataCustomFormat;
 window.validateExportData = validateExportData;
 window.toggleFailureDetails = toggleFailureDetails;
 window.analyzeFailures = analyzeFailures;
+window.enableExportButton = enableExportButton;
+window.forceEnableExportButton = forceEnableExportButton;
+window.testExportFunction = testExportFunction;
+window.diagnoseExportIssue = diagnoseExportIssue;
 window.toggleSidebar = toggleSidebar;
 window.toggleRouteSelector = toggleRouteSelector;
 
@@ -1817,6 +1842,7 @@ async function optimizeRoutes() {
         // Set global variable
         window.optimizationResults = validatedResults;
         console.log('Setting window.optimizationResults:', window.optimizationResults);
+        console.log('✅ Optimization results set, enabling export button...');
         
         // Check global variable properly
         if (!window.optimizationResults || window.optimizationResults.length === 0) {
@@ -1840,12 +1866,8 @@ async function optimizeRoutes() {
         visualizeOptimizedRoutes();
         displayResults();
         
-        document.getElementById('exportCustomBtn').disabled = false;
-        
-        // Also enable export buttons if results are available
-        if (window.optimizationResults && window.optimizationResults.length > 0) {
-            document.getElementById('exportCustomBtn').disabled = false;
-        }
+        // Enable export button
+        enableExportButton();
         // Count and display route failure statistics
         const failureStats = analyzeRouteFailures(window.optimizationResults);
         displayRouteFailureStats(failureStats);
@@ -3996,6 +4018,140 @@ function analyzeFailures() {
     
     console.log('='.repeat(50));
     return stats;
+}
+
+// Utility function to enable export button manually
+function enableExportButton() {
+    console.log('🔧 enableExportButton called');
+    const exportBtn = document.getElementById('exportCustomBtn');
+    if (exportBtn) {
+        // Use the same robust approach as forceEnableExportButton
+        exportBtn.disabled = false;
+        exportBtn.removeAttribute('disabled'); // This is key - removes the HTML attribute
+        exportBtn.style.opacity = '1 !important'; // Override CSS with !important
+        exportBtn.style.cursor = 'pointer !important';
+        exportBtn.style.backgroundColor = ''; // Reset any disabled background
+        exportBtn.style.pointerEvents = 'auto'; // Ensure clicks work
+        exportBtn.style.transform = ''; // Reset any disabled transform
+        console.log('✅ Export button enabled with robust styling');
+        
+        if (window.optimizationResults && window.optimizationResults.length > 0) {
+            console.log(`✅ Found ${window.optimizationResults.length} routes ready for export`);
+        } else {
+            console.warn('⚠️ No optimization results available');
+        }
+    } else {
+        console.error('❌ Export button not found');
+    }
+}
+
+// Force enable export button regardless of state
+function forceEnableExportButton() {
+    console.log('🔧 forceEnableExportButton called');
+    const exportBtn = document.getElementById('exportCustomBtn');
+    if (exportBtn) {
+        exportBtn.disabled = false;
+        exportBtn.removeAttribute('disabled');
+        exportBtn.style.opacity = '1';
+        exportBtn.style.cursor = 'pointer';
+        exportBtn.style.backgroundColor = '';
+        exportBtn.style.pointerEvents = 'auto';
+        console.log('✅ Export button force enabled');
+    } else {
+        console.error('❌ Export button not found');
+    }
+}
+
+// Test function to check export functionality
+function testExportFunction() {
+    console.log('🧪 TESTING EXPORT FUNCTIONALITY:');
+    console.log('🔍 Papa Parse available:', typeof Papa !== 'undefined');
+    console.log('🔍 Window.optimizationResults:', !!window.optimizationResults);
+    console.log('🔍 Routes count:', window.optimizationResults?.length || 0);
+    
+    const exportBtn = document.getElementById('exportCustomBtn');
+    console.log('🔍 Export button found:', !!exportBtn);
+    console.log('🔍 Export button disabled:', exportBtn?.disabled);
+    
+    const shiftTime = document.getElementById('shiftTime')?.value;
+    const dayOfWeek = document.getElementById('dayOfWeek')?.value;
+    console.log('🔍 Shift time:', shiftTime);
+    console.log('🔍 Day of week:', dayOfWeek);
+    
+    if (window.optimizationResults && window.optimizationResults.length > 0) {
+        console.log('✅ All prerequisites met for export');
+        enableExportButton();
+    } else {
+        console.warn('⚠️ Run optimization first to enable export');
+    }
+}
+
+// Comprehensive diagnostic function for export issues
+function diagnoseExportIssue() {
+    console.log('\n🔍 EXPORT ISSUE DIAGNOSIS:');
+    console.log('='.repeat(60));
+    
+    // Check optimization results
+    const hasResults = !!window.optimizationResults;
+    const resultsCount = window.optimizationResults?.length || 0;
+    console.log(`📊 Optimization Results: ${hasResults ? '✅' : '❌'} Found (${resultsCount} routes)`);
+    
+    // Check button state
+    const exportBtn = document.getElementById('exportCustomBtn');
+    const buttonExists = !!exportBtn;
+    const isDisabled = exportBtn?.disabled;
+    console.log(`🔘 Export Button Exists: ${buttonExists ? '✅' : '❌'}`);
+    console.log(`🔘 Export Button Disabled: ${isDisabled ? '❌' : '✅'}`);
+    
+    if (exportBtn) {
+        console.log(`🔘 Button opacity: ${exportBtn.style.opacity || 'default'}`);
+        console.log(`🔘 Button cursor: ${exportBtn.style.cursor || 'default'}`);
+        console.log(`🔘 Button pointer events: ${exportBtn.style.pointerEvents || 'default'}`);
+    }
+    
+    // Check Papa Parse
+    const papaAvailable = typeof Papa !== 'undefined';
+    console.log(`📚 Papa Parse Library: ${papaAvailable ? '✅' : '❌'} Available`);
+    
+    // Check form values
+    const shiftTime = document.getElementById('shiftTime')?.value;
+    const dayOfWeek = document.getElementById('dayOfWeek')?.value;
+    console.log(`⚙️ Shift Time: ${shiftTime || 'Not set'}`);
+    console.log(`⚙️ Day of Week: ${dayOfWeek || 'Not set'}`);
+    
+    // Check optimization button state (if that worked, export should too)
+    const optimizeBtn = document.getElementById('optimizeBtn');
+    console.log(`🎯 Optimize Button Disabled: ${optimizeBtn?.disabled ? '❌' : '✅'}`);
+    
+    console.log('\n🔧 RECOMMENDED ACTIONS:');
+    
+    if (!hasResults) {
+        console.log('1. Run route optimization first');
+    }
+    
+    if (isDisabled && hasResults) {
+        console.log('2. Try: forceEnableExportButton()');
+    }
+    
+    if (!papaAvailable) {
+        console.log('3. Papa Parse library missing - reload page');
+    }
+    
+    if (hasResults && buttonExists) {
+        console.log('4. Try clicking export button now');
+        forceEnableExportButton();
+    }
+    
+    console.log('='.repeat(60));
+    
+    return {
+        hasResults,
+        resultsCount,
+        buttonExists,
+        isDisabled,
+        papaAvailable,
+        diagnosis: hasResults && buttonExists && papaAvailable ? 'SHOULD_WORK' : 'ISSUES_FOUND'
+    };
 }
 
 // ✅ INTEGRATED: Finalize cluster with straightness metrics
@@ -6553,7 +6709,12 @@ function calculateRouteDistance(stops) {
 // Export route data in the specific format requested by user
 async function exportRouteDataCustomFormat() {
     try {
+        console.log('🔍 Export function called');
+        console.log('🔍 Optimization results exist:', !!window.optimizationResults);
+        console.log('🔍 Optimization results length:', window.optimizationResults?.length || 0);
+        
         if (!window.optimizationResults || !window.optimizationResults.length) {
+            console.error('❌ No optimization results available for export');
             showToast('No optimization results to export. Please run optimization first.', 'error');
             return;
         }
@@ -6562,14 +6723,23 @@ async function exportRouteDataCustomFormat() {
         
         // Get current timestamp for file naming
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-        const shiftTime = AppState.currentShift || 'unknown';
-        const dayOfWeek = AppState.currentDay || 'unknown';
+        const shiftTime = document.getElementById('shiftTime')?.value || 'unknown';
+        const dayOfWeek = document.getElementById('dayOfWeek')?.value || 'unknown';
         
         // Create the custom format data
         const exportData = createCustomRouteExportData();
         
         // Generate and download the CSV file
+        console.log('🔍 Papa available:', typeof Papa !== 'undefined');
+        console.log('🔍 Export data ready:', exportData.length, 'routes');
+        
+        if (typeof Papa === 'undefined') {
+            throw new Error('Papa Parse library not loaded. CSV export not available.');
+        }
+        
         const csv = Papa.unparse(exportData);
+        console.log('🔍 CSV generated, length:', csv.length);
+        
         const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
         const url = URL.createObjectURL(blob);
@@ -6802,8 +6972,8 @@ async function exportComprehensiveResults() {
         
         // Get current timestamp for file naming
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-        const shiftTime = AppState.currentShift || 'unknown';
-        const dayOfWeek = AppState.currentDay || 'unknown';
+        const shiftTime = document.getElementById('shiftTime')?.value || 'unknown';
+        const dayOfWeek = document.getElementById('dayOfWeek')?.value || 'unknown';
         
         // Create comprehensive export data
         const exportData = createComprehensiveExportData(shiftTime, dayOfWeek, timestamp);
