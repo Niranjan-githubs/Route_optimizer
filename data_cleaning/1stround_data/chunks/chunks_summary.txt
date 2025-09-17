@@ -1,0 +1,13 @@
+CSV Split Summary
+================
+Original file: 1stround_data/1stround_master.csv
+Total rows: 7,675
+Chunk size: 2,000
+Total chunks: 4
+Output directory: 1stround_data/chunks/
+
+Chunk files:
+  - 1stround_master_chunk_001.csv
+  - 1stround_master_chunk_002.csv
+  - 1stround_master_chunk_003.csv
+  - 1stround_master_chunk_004.csv

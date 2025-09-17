@@ -1,6 +1,8 @@
 // 🚌 Smart Bus Route Optimizer - Modern Application
 // This replaces the old Leaflet-based system with Google Maps and fixes all UI bugs
 
+// Network optimization functions are loaded via script tag in HTML
+
 // Global state
 const AppState = {
     map: null,
@@ -33,16 +35,30 @@ const AppState = {
 };
 
 // Constants
-const COLLEGE_COORDS = [13.008867898985972, 80.00353386796435]; // Array format for compatibility
 const ROUTE_COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3', '#54A0FF', '#5F27CD'];
 const GOOGLE_API_KEY = 'AIzaSyAiVn2TbI7qSuTzw1EKvY4urq7V5aTZkZg'; // Google API Key for Directions API
 
 // Global variables for optimization system
-window.COLLEGE_COORDS = COLLEGE_COORDS;
+// COLLEGE_COORDS is defined in googleAPI.js and made available globally
 window.stopsData = [];
 window.depotsData = [];
 
-// Global initMap function for Google Maps callback (will be set later to avoid conflicts)
+// Global initMap function for Google Maps callback
+window.initMap = function() {
+    console.log('🚀 Google Maps API loaded via callback. Initializing Smart Bus Route Optimizer...');
+    // Clear any waiting intervals
+    if (window.waitForGoogleMaps) {
+        clearInterval(window.waitForGoogleMaps);
+    }
+    // Small delay to ensure DOM is ready
+    setTimeout(() => {
+        if (document.readyState === 'complete') {
+            initializeApp();
+        } else {
+            document.addEventListener('DOMContentLoaded', initializeApp);
+        }
+    }, 100);
+};
 
 // Initialize application
 document.addEventListener('DOMContentLoaded', function() {
@@ -752,8 +768,8 @@ async function visualizeRoutes(routes) {
             // Use road-following route tracer instead of straight polylines
             await visualizeOptimizedRoute(waypoints, color, route, index);
             
-            // Small delay to avoid overwhelming the routing service
-            await new Promise(resolve => setTimeout(resolve, 200));
+            // Increased delay to avoid OSRM rate limiting
+            await new Promise(resolve => setTimeout(resolve, 500));
         }
         
         fitMapToRoutes();
@@ -801,33 +817,64 @@ async function visualizeRoutes(routes) {
     }
 }
 
-// Get road-following directions using OSRM
+// Rate limiter for OSRM API calls
+let osrmRequestQueue = [];
+let isProcessingQueue = false;
+const OSRM_RATE_LIMIT = 100; // 100ms between requests
+
+async function processOSRMQueue() {
+    if (isProcessingQueue || osrmRequestQueue.length === 0) return;
+    
+    isProcessingQueue = true;
+    
+    while (osrmRequestQueue.length > 0) {
+        const { resolve, reject, origin, destination } = osrmRequestQueue.shift();
+        
+        try {
+            const result = await getDirectionsInternal(origin, destination);
+            resolve(result);
+        } catch (error) {
+            reject(error);
+        }
+        
+        // Rate limiting delay
+        await new Promise(resolve => setTimeout(resolve, OSRM_RATE_LIMIT));
+    }
+    
+    isProcessingQueue = false;
+}
+
+// Internal OSRM function without rate limiting
+async function getDirectionsInternal(origin, destination) {
+    const coordinates = `${origin.lng},${origin.lat};${destination.lng},${destination.lat}`;
+    const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson`;
+    
+    const response = await fetch(osrmUrl);
+    
+    if (!response.ok) {
+        throw new Error(`OSRM API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data.routes && data.routes[0] && data.routes[0].geometry) {
+        // Convert GeoJSON coordinates [lng, lat] to Leaflet format [lat, lng]
+        return data.routes[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
+    }
+    
+    throw new Error('No route found');
+}
+
+// Rate-limited OSRM function
 async function getDirections(origin, destination) {
-    try {
-        // Build OSRM request URL
-        const coordinates = `${origin.lng},${origin.lat};${destination.lng},${destination.lat}`;
-        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson`;
-        
-        const response = await fetch(osrmUrl);
-        
-        if (!response.ok) {
-            throw new Error(`OSRM API error: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        
-        if (data.routes && data.routes[0] && data.routes[0].geometry) {
-            // Convert GeoJSON coordinates [lng, lat] to Leaflet format [lat, lng]
-            return data.routes[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
-        }
-        
-        throw new Error('No route found');
-        
-    } catch (error) {
+    return new Promise((resolve, reject) => {
+        osrmRequestQueue.push({ resolve, reject, origin, destination });
+        processOSRMQueue();
+    }).catch(error => {
         console.error('OSRM routing error:', error);
         // Fallback to straight line
         return [[origin.lat, origin.lng], [destination.lat, destination.lng]];
-    }
+    });
 }
 
 // Helper function to visualize a single optimized route
@@ -852,6 +899,11 @@ async function visualizeOptimizedRoute(waypoints, color, route, index) {
         polyline.addListener('click', () => {
             showRouteInfo(route, index);
         });
+        
+        // Small delay between segments to avoid rate limiting
+        if (i < waypoints.length - 2) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
         }
         
         // Add markers for stops
@@ -2743,7 +2795,11 @@ async function getRoadPath(origin, destination) {
         clearTimeout(timeoutId);
         
         if (!res.ok) {
-            console.warn(`❌ OSRM API failed: ${res.status} ${res.statusText}`);
+            if (res.status === 429) {
+                console.warn(`⚠️ OSRM rate limited (429) - using straight line fallback`);
+            } else {
+                console.warn(`❌ OSRM API failed: ${res.status} ${res.statusText}`);
+            }
             return null;
         }
         const data = await res.json();
@@ -3151,10 +3207,47 @@ function createsLoops(stops) {
 // ✅ INTEGRATED: Your main optimization function with advanced angular slicing
 async function getBusOptimizedRoutes() {
     try {
+        // Clear previous dropped stops tracking
+        if (typeof window.clearDroppedStopsTracking === 'function') {
+            window.clearDroppedStopsTracking();
+        }
+        
         const filteredStops = filterStopsByDistance(AppState.stopsData, 40);
         const maxCapacity = parseInt(document.getElementById('maxCapacity').value) || 55;
         
         console.log(`🚌 Starting advanced optimization for ${filteredStops.length} stops`);
+        
+        // Track filtered out stops as outliers
+        const originalStops = AppState.stopsData || [];
+        const filteredOutStops = originalStops.filter(stop => 
+            !filteredStops.some(fs => fs.cluster_number === stop.cluster_number)
+        );
+        
+        if (filteredOutStops.length > 0) {
+            console.log(`📋 Tracking ${filteredOutStops.length} stops filtered by distance as outliers...`);
+            filteredOutStops.forEach(stop => {
+                if (typeof window.trackDroppedStop === 'function') {
+                    const distance = calculateHaversineDistance(
+                        COLLEGE_COORDS[0], COLLEGE_COORDS[1],
+                        parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon)
+                    );
+                    window.trackDroppedStop(stop, 'DISTANCE_FILTER', {
+                        distance_km: distance,
+                        max_allowed_km: 40
+                    });
+                }
+            });
+        }
+        
+        // Calculate total students in original data vs filtered data
+        const originalStudents = originalStops.reduce((sum, stop) => sum + parseInt(stop.num_students || 0), 0);
+        const filteredStudents = filteredStops.reduce((sum, stop) => sum + parseInt(stop.num_students || 0), 0);
+        const filteredOutStudents = originalStudents - filteredStudents;
+        
+        console.log(`📊 STUDENT COUNT ANALYSIS:`);
+        console.log(`   - Original students: ${originalStudents}`);
+        console.log(`   - Filtered students: ${filteredStudents}`);
+        console.log(`   - Filtered out students: ${filteredOutStudents}`);
         
         // ✅ PRIMARY: Use the advanced angular slicing algorithm from googleAPI.js
         console.log(`🎯 Using advanced angular slicing algorithm (12° sectors)`);
@@ -3229,6 +3322,8 @@ async function getBusOptimizedRoutes() {
         console.log(`   - Unserved stops: ${unservedStops.length}`);
         console.log(`   - Advanced routes: ${formattedAdvancedRoutes.length}`);
         
+
+        
         // Salvage operation for unserved stops
         if (parseFloat(coveragePercent) < 85 && unservedStops.length > 0) {
             console.log(`🔄 Coverage below 85% - attempting to create salvage routes for unserved stops...`);
@@ -3238,6 +3333,20 @@ async function getBusOptimizedRoutes() {
             console.log(`✅ Created ${validSalvageRoutes.length} salvage routes for unserved stops`);
             
             allRoutes = [...servingRoutes, ...validSalvageRoutes];
+            
+            // Track remaining unserved stops as outliers
+            if (unservedStops.length > 0) {
+                console.log(`📋 Tracking ${unservedStops.length} unserved stops as outliers...`);
+                unservedStops.forEach(stop => {
+                    if (typeof window.trackDroppedStop === 'function') {
+                        window.trackDroppedStop(stop, 'UNASSIGNED', {
+                            total_routes_generated: allRoutes.length,
+                            total_stops_served: servedStops.length,
+                            coverage_percent: coveragePercent
+                        });
+                    }
+                });
+            }
             
             // Recalculate coverage
             const finalCoverage = analyzeRouteCoverage(allRoutes, filteredStops);
@@ -3271,6 +3380,242 @@ async function getBusOptimizedRoutes() {
         const finalRoutes = allRoutes.slice(0, maxBusesNeeded);
         
         console.log(`🎯 Final solution: ${finalRoutes.length} routes (${formattedAdvancedRoutes.filter(r => finalRoutes.includes(r)).length} advanced)`);
+        
+        // POST-PROCESSING: Detect missing stops by comparing input vs assigned
+        if (typeof window.detectMissingStops === 'function') {
+            console.log('🔍 Running post-processing outlier detection...');
+            const missingStops = window.detectMissingStops(filteredStops, finalRoutes);
+            console.log(`📊 Post-processing found ${missingStops.length} missing stops`);
+        }
+        
+        // Final student count analysis (after post-processing)
+        const finalServedStudents = finalRoutes.reduce((sum, route) => sum + route.totalStudents, 0);
+        const totalOutlierStudents = window.droppedStopsTracker?.allDroppedStops?.reduce((sum, stop) => 
+            sum + parseInt(stop.num_students || 0), 0) || 0;
+        const missingStudents = originalStudents - finalServedStudents - totalOutlierStudents;
+        
+        // Debug: Check for potential double-counting
+        console.log(`🔍 DEBUGGING STUDENT COUNTS:`);
+        console.log(`   - Route totalStudents field: ${finalServedStudents}`);
+        console.log(`   - Outlier num_students field: ${totalOutlierStudents}`);
+        console.log(`   - Sum: ${finalServedStudents + totalOutlierStudents}`);
+        console.log(`   - Original: ${originalStudents}`);
+        console.log(`   - Difference: ${(finalServedStudents + totalOutlierStudents) - originalStudents}`);
+        
+        // Debug: Compare coverage analysis vs route totals
+        const coverageAnalysis = analyzeRouteCoverage(finalRoutes, filteredStops);
+        console.log(`🔍 COVERAGE VS ROUTE TOTALS:`);
+        console.log(`   - Coverage servedStudents: ${coverageAnalysis.servedStudents}`);
+        console.log(`   - Route totalStudents sum: ${finalServedStudents}`);
+        console.log(`   - Difference: ${coverageAnalysis.servedStudents - finalServedStudents}`);
+        
+        // COMPREHENSIVE STUDENT COUNTING DEBUG
+        console.log(`🔍 COMPREHENSIVE STUDENT COUNTING DEBUG:`);
+        
+        // 1. Route Analysis
+        const routeStopIds = new Set();
+        const routeStopStudentCounts = new Map();
+        let routeTotalStudents = 0;
+        const routeTotalStudentsFromField = finalRoutes.reduce((sum, route) => sum + route.totalStudents, 0);
+        
+        finalRoutes.forEach((route, routeIndex) => {
+            if (route.stops) {
+                let routeStudents = 0;
+                route.stops.forEach(stop => {
+                    const stopId = stop.cluster_number || stop.id;
+                    const studentCount = parseInt(stop.num_students) || 1;
+                    routeStopIds.add(stopId);
+                    routeStopStudentCounts.set(stopId, studentCount);
+                    routeStudents += studentCount;
+                });
+                routeTotalStudents += routeStudents;
+                console.log(`   Route ${routeIndex + 1}: ${route.stops.length} stops, ${routeStudents} students (totalStudents: ${route.totalStudents})`);
+            }
+        });
+        
+        // 2. Outlier Analysis
+        const outlierStopIds = new Set();
+        const outlierStopStudentCounts = new Map();
+        let outlierTotalStudents = 0;
+        
+        window.droppedStopsTracker?.allDroppedStops?.forEach((stop, index) => {
+            const stopId = stop.cluster_number;
+            const studentCount = parseInt(stop.num_students) || 1;
+            outlierStopIds.add(stopId);
+            outlierStopStudentCounts.set(stopId, studentCount);
+            outlierTotalStudents += studentCount;
+        });
+        
+        // 3. Overlap Detection
+        const overlap = [...routeStopIds].filter(id => outlierStopIds.has(id));
+        let overlapStudentCount = 0;
+        
+        if (overlap.length > 0) {
+            console.log(`🚨 CRITICAL: Found ${overlap.length} overlapping stops!`);
+            overlap.forEach(stopId => {
+                const routeStudents = routeStopStudentCounts.get(stopId) || 0;
+                const outlierStudents = outlierStopStudentCounts.get(stopId) || 0;
+                overlapStudentCount += Math.max(routeStudents, outlierStudents);
+                console.log(`   - Stop ${stopId}: Route=${routeStudents}, Outlier=${outlierStudents}`);
+            });
+        }
+        
+        // 4. Input Data Analysis
+        const inputStopIds = new Set();
+        const inputStudentCounts = new Map();
+        let inputTotalStudents = 0;
+        
+        filteredStops.forEach(stop => {
+            const stopId = stop.cluster_number || stop.id;
+            const studentCount = parseInt(stop.num_students) || 1;
+            inputStopIds.add(stopId);
+            inputStudentCounts.set(stopId, studentCount);
+            inputTotalStudents += studentCount;
+        });
+        
+        // 5. Missing Stops Analysis
+        const missingStops = [...inputStopIds].filter(id => !routeStopIds.has(id));
+        let missingStudentCount = 0;
+        missingStops.forEach(stopId => {
+            missingStudentCount += inputStudentCounts.get(stopId) || 0;
+        });
+        
+        // 6. Summary
+        console.log(`📊 SUMMARY:`);
+        console.log(`   - Input stops: ${inputStopIds.size} (${inputTotalStudents} students)`);
+        console.log(`   - Route stops: ${routeStopIds.size} (${routeTotalStudents} students)`);
+        console.log(`   - Outlier stops: ${outlierStopIds.size} (${outlierTotalStudents} students)`);
+        console.log(`   - Overlapping stops: ${overlap.length} (${overlapStudentCount} students)`);
+        console.log(`   - Missing stops: ${missingStops.length} (${missingStudentCount} students)`);
+        console.log(`   - Total counted: ${routeTotalStudents + outlierTotalStudents}`);
+        console.log(`   - Original: ${originalStudents}`);
+        console.log(`   - Over-count: ${(routeTotalStudents + outlierTotalStudents) - originalStudents}`);
+        
+        // 7. Data Consistency Check
+        console.log(`🔍 DATA CONSISTENCY:`);
+        console.log(`   - Input vs Original: ${inputTotalStudents} vs ${originalStudents} (diff: ${inputTotalStudents - originalStudents})`);
+        console.log(`   - Route totalStudents vs calculated: ${finalRoutes.reduce((sum, r) => sum + r.totalStudents, 0)} vs ${routeTotalStudents}`);
+        
+        // 8. DETAILED OVER-COUNT ANALYSIS
+        console.log(`🔍 DETAILED OVER-COUNT ANALYSIS:`);
+        
+        // Check if there are any stops counted in both routes and outliers
+        const routeStopSet = new Set(routeStopIds);
+        const outlierStopSet = new Set(outlierStopIds);
+        const actualOverlap = [...routeStopSet].filter(id => outlierStopSet.has(id));
+        
+        if (actualOverlap.length > 0) {
+            console.log(`🚨 FOUND ${actualOverlap.length} STOPS COUNTED IN BOTH ROUTES AND OUTLIERS!`);
+            actualOverlap.forEach(stopId => {
+                const routeStudents = routeStopStudentCounts.get(stopId) || 0;
+                const outlierStudents = outlierStopStudentCounts.get(stopId) || 0;
+                console.log(`   - Stop ${stopId}: Route=${routeStudents}, Outlier=${outlierStudents}, Total=${routeStudents + outlierStudents}`);
+            });
+        } else {
+            console.log(`✅ No overlapping stops between routes and outliers`);
+        }
+        
+        // Check if input data has different student counts than expected
+        console.log(`🔍 INPUT DATA ANALYSIS:`);
+        console.log(`   - Input stops count: ${inputStopIds.size}`);
+        console.log(`   - Input students sum: ${inputTotalStudents}`);
+        console.log(`   - Original students: ${originalStudents}`);
+        console.log(`   - Difference: ${inputTotalStudents - originalStudents}`);
+        
+        // Check if there are any stops in outliers that shouldn't be there
+        console.log(`🔍 OUTLIER VALIDATION:`);
+        const outlierStopsInInput = [...outlierStopIds].filter(id => inputStopIds.has(id));
+        const outlierStopsNotInInput = [...outlierStopIds].filter(id => !inputStopIds.has(id));
+        
+        console.log(`   - Outlier stops that were in input: ${outlierStopsInInput.length}`);
+        console.log(`   - Outlier stops NOT in input: ${outlierStopsNotInInput.length}`);
+        
+        if (outlierStopsNotInInput.length > 0) {
+            console.log(`🚨 FOUND ${outlierStopsNotInInput.length} OUTLIER STOPS NOT IN INPUT DATA!`);
+            outlierStopsNotInInput.forEach(stopId => {
+                const studentCount = outlierStopStudentCounts.get(stopId) || 0;
+                console.log(`   - Stop ${stopId}: ${studentCount} students`);
+            });
+        }
+        
+        // Check if there are any stops in routes that shouldn't be there
+        console.log(`🔍 ROUTE VALIDATION:`);
+        const routeStopsInInput = [...routeStopIds].filter(id => inputStopIds.has(id));
+        const routeStopsNotInInput = [...routeStopIds].filter(id => !inputStopIds.has(id));
+        
+        console.log(`   - Route stops that were in input: ${routeStopsInInput.length}`);
+        console.log(`   - Route stops NOT in input: ${routeStopsNotInInput.length}`);
+        
+        if (routeStopsNotInInput.length > 0) {
+            console.log(`🚨 FOUND ${routeStopsNotInInput.length} ROUTE STOPS NOT IN INPUT DATA!`);
+            routeStopsNotInInput.forEach(stopId => {
+                const studentCount = routeStopStudentCounts.get(stopId) || 0;
+                console.log(`   - Stop ${stopId}: ${studentCount} students`);
+            });
+        }
+        
+        // Final calculation check
+        const expectedTotal = inputTotalStudents;
+        const actualTotal = routeTotalStudentsFromField + outlierTotalStudents;
+        const overCount = actualTotal - expectedTotal;
+        
+        console.log(`🔍 FINAL CALCULATION CHECK:`);
+        console.log(`   - Expected total (input students): ${expectedTotal}`);
+        console.log(`   - Actual total (routes + outliers): ${actualTotal}`);
+        console.log(`   - Over-count: ${overCount}`);
+        
+        if (overCount > 0) {
+            console.log(`🚨 OVER-COUNT SOURCE ANALYSIS:`);
+            console.log(`   - Route students (calculated): ${routeTotalStudents}`);
+        console.log(`   - Route students (from field): ${routeTotalStudentsFromField}`);
+        console.log(`   - Difference: ${routeTotalStudentsFromField - routeTotalStudents}`);
+            console.log(`   - Outlier students: ${outlierTotalStudents}`);
+            console.log(`   - Input students: ${inputTotalStudents}`);
+            console.log(`   - Extra students: ${overCount}`);
+            
+            // Check if the over-count matches the difference between input and original
+            const inputVsOriginalDiff = inputTotalStudents - originalStudents;
+            console.log(`   - Input vs Original difference: ${inputVsOriginalDiff}`);
+            console.log(`   - Over-count - Input/Original diff: ${overCount - inputVsOriginalDiff}`);
+        }
+        
+        console.log(`📊 FINAL STUDENT ACCOUNTING:`);
+        console.log(`   - Original students: ${originalStudents}`);
+        console.log(`   - Served by routes: ${finalServedStudents}`);
+        console.log(`   - Tracked as outliers: ${totalOutlierStudents}`);
+        console.log(`   - Missing/unaccounted: ${missingStudents}`);
+        console.log(`   - Total tracked stops: ${window.droppedStopsTracker?.allDroppedStops?.length || 0}`);
+        console.log(`   - Unique stop IDs tracked: ${window.droppedStopsTracker?.trackedStopIds?.size || 0}`);
+        
+        if (missingStudents > 0) {
+            console.warn(`⚠️ ${missingStudents} students are unaccounted for! This indicates a bug in student tracking.`);
+        }
+        
+        // Show breakdown by reason
+        if (window.droppedStopsTracker?.allDroppedStops) {
+            const reasonBreakdown = {};
+            window.droppedStopsTracker.allDroppedStops.forEach(stop => {
+                if (!reasonBreakdown[stop.reason]) {
+                    reasonBreakdown[stop.reason] = { count: 0, students: 0 };
+                }
+                reasonBreakdown[stop.reason].count++;
+                reasonBreakdown[stop.reason].students += parseInt(stop.num_students || 0);
+            });
+            
+            console.log(`📊 OUTLIER BREAKDOWN BY REASON:`);
+            Object.entries(reasonBreakdown).forEach(([reason, data]) => {
+                console.log(`   - ${reason}: ${data.count} stops, ${data.students} students`);
+            });
+        }
+        
+        // Export outliers if any were tracked
+        if (typeof window.exportDroppedStopsAsCSV === 'function' && 
+            typeof window.droppedStopsTracker !== 'undefined' && 
+            window.droppedStopsTracker.allDroppedStops.length > 0) {
+            console.log(`📊 Exporting ${window.droppedStopsTracker.allDroppedStops.length} tracked outliers...`);
+            window.exportDroppedStopsAsCSV();
+        }
+        
         return finalRoutes;
         
     } catch (error) {
@@ -3316,6 +3661,18 @@ function validateRouteLength(route) {
     // Strictly enforce limits
     if (distanceKm > STRICT_MAX_DISTANCE) {
         console.warn(`⚠️ Route ${route.busId} rejected - exceeds strict ${STRICT_MAX_DISTANCE}km limit (${distanceKm.toFixed(1)}km)`);
+        
+        // Track stops from rejected route as outliers
+        if (route.stops && typeof window.trackDroppedStop === 'function') {
+            route.stops.forEach(stop => {
+                window.trackDroppedStop(stop, 'ROUTE_LENGTH_EXCEEDED', {
+                    route_id: route.busId,
+                    route_distance_km: distanceKm,
+                    max_allowed_km: STRICT_MAX_DISTANCE
+                });
+            });
+        }
+        
         return false;
     }
     
@@ -4231,14 +4588,7 @@ function turnDelta(deg1, deg2) {
     return d > 180 ? 360 - d : d;
 }
 
-// ✅ ADVANCED ALGORITHM: Parameters for angular slicing
-const DEST = { lat: COLLEGE_COORDS[0], lng: COLLEGE_COORDS[1] }; // college
-const ANGLE_SLICE_DEG = 12;      // 10–15° works well
-const ROAD_FACTOR = 1.25;        // road detour factor vs straight-line
-const MONOTONE_DELTA_M = 300;    // each hop should move ≥300 m closer to DEST
-const MAX_TURN_DEG = 70;         // keep heading generally toward DEST
-const MAX_ROUTE_M = 40000;       // soft prefer, hard cap elsewhere 50km
-const HARD_MAX_ROUTE_M = 50000;
+// ✅ ADVANCED ALGORITHM: Parameters are defined in googleAPI.js
 
 // ✅ ADVANCED ALGORITHM: Preprocess stops with polar coordinates
 function decorateStopsWithPolar(stops) {
@@ -4270,84 +4620,7 @@ function bucketByAngle(stops) {
     return buckets;
 }
 
-// ✅ ADVANCED ALGORITHM: Build routes from a bucket
-function buildRoutesFromBucket(buckets, key, maxCapacity, depot) {
-    const my = buckets.get(key) || [];
-    const left = buckets.get(key - 1) || [];
-    const right = buckets.get(key + 1) || [];
-
-    const pool = [...my]; // we'll borrow from neighbors only if needed
-
-    const routes = [];
-    while (pool.length) {
-        let route = [];
-        let load = 0;
-        let dist = 0;
-
-        // start at farthest remaining
-        route.push(pool.shift());
-
-        while (true) {
-            const cur = route[route.length - 1];
-
-            // candidate list: prefer same bucket first
-            const candidates = pool.length ? pool : (left.length ? left : right);
-
-            let best = null, bestGain = Infinity;
-            for (let i = 0; i < candidates.length; i++) {
-                const cand = candidates[i];
-                // capacity early
-                if ((load + (cand.students || 1)) > maxCapacity) continue;
-
-                // monotone progress toward DEST
-                if (cand.r > cur.r - MONOTONE_DELTA_M) continue;
-
-                // heading constraint: prefer moves that keep overall bearing toward DEST
-                const curHead = bearing(cur, DEST);
-                const moveHead = bearing(cur, cand);
-                if (turnDelta(curHead, moveHead) > MAX_TURN_DEG) continue;
-
-                // projected length
-                const leg = haversine(cur, cand) * ROAD_FACTOR;
-                if ((dist + leg) > MAX_ROUTE_M) continue;
-
-                if (leg < bestGain) {
-                    bestGain = leg;
-                    best = { idx: i, arr: candidates, stop: cand, leg };
-                }
-            }
-
-            if (!best) break; // no feasible next hop
-
-            route.push(best.stop);
-            dist += best.leg;
-            load += (best.stop.students || 1);
-            best.arr.splice(best.idx, 1); // remove from its source array
-        }
-
-        // close route to DEST (college)
-        const tail = route[route.length - 1];
-        dist += haversine(tail, DEST) * ROAD_FACTOR;
-
-        // hard cap check; if broken, split tail off to new route
-        if (dist > HARD_MAX_ROUTE_M && route.length > 1) {
-            const last = route.pop();
-            // return last to its home bucket
-            const homeKey = Math.floor(last.theta / ANGLE_SLICE_DEG);
-            (buckets.get(homeKey) || my).push(last);
-            // recompute dist w/o last
-            const tail2 = route[route.length - 1];
-            dist = 0;
-            for (let i = 0; i < route.length - 1; i++) {
-                dist += haversine(route[i], route[i + 1]) * ROAD_FACTOR;
-            }
-            dist += haversine(tail2, DEST) * ROAD_FACTOR;
-        }
-
-        routes.push({ stops: route, load, dist, depot });
-    }
-    return routes;
-}
+// ✅ ADVANCED ALGORITHM: Build routes from a bucket (DUPLICATE REMOVED - using googleAPI.js version)
 
 // ✅ ADVANCED ALGORITHM: 2-opt improvement on stop order
 function twoOptImprove(routeStops) {
@@ -4381,35 +4654,7 @@ function twoOptImprove(routeStops) {
     return best;
 }
 
-// ✅ ADVANCED ALGORITHM: Main function to build optimized routes
-function buildOptimizedRoutes(stops, depots, maxCapacity) {
-    console.log(`🎯 Building advanced optimized routes for ${stops.length} stops`);
-    
-    const S = decorateStopsWithPolar(stops);
-    const buckets = bucketByAngle(S);
-
-    console.log(`📊 Created ${buckets.size} angular sectors (${ANGLE_SLICE_DEG}° each)`);
-
-    const allRoutes = [];
-    for (const [key] of buckets) {
-        // pick best depot for this sector (closest to sector centroid or to farthest stop)
-        const depot = pickDepotForSector(key, buckets, depots);
-        const sectorRoutes = buildRoutesFromBucket(buckets, key, maxCapacity, depot)
-            .map(r => {
-                const cleaned = twoOptImprove(r.stops);
-                // recompute distance
-                let d = 0;
-                for (let i = 0; i < cleaned.length - 1; i++)
-                    d += haversine(cleaned[i], cleaned[i + 1]) * ROAD_FACTOR;
-                d += haversine(cleaned[cleaned.length - 1], DEST) * ROAD_FACTOR;
-                return { ...r, stops: cleaned, dist: d };
-            });
-        allRoutes.push(...sectorRoutes);
-    }
-    
-    console.log(`✅ Generated ${allRoutes.length} advanced optimized routes`);
-    return allRoutes;
-}
+// ✅ ADVANCED ALGORITHM: Main function to build optimized routes (DUPLICATE REMOVED - using googleAPI.js version)
 
 // ✅ ADVANCED ALGORITHM: Pick depot for sector
 function pickDepotForSector(key, buckets, depots) {
@@ -5032,7 +5277,7 @@ async function callGoogleRouteOptimization(requestData) {
         
         // This would be your actual Google API call
         // For now, we'll use the local optimization
-        const results = await getBusOptimizedRoutes();
+        const results = await optimizeWithNetworkConstraints(csvData)
         
         if (!results || results.length === 0) {
             throw new Error('No routes generated from Google API');
@@ -5064,7 +5309,7 @@ async function optimizeWithGoogleAPI() {
         }
         
         // Use the new getBusOptimizedRoutes function instead of the old approach
-        //const optimizedRoutes = await optimizeWithNetworkConstraints(csvData)
+        const optimizedRoutes = await optimizeWithNetworkConstraints(csvData)
 
         async function optimizeWithGPSConstraints() {
             const csvData = await loadGPSData();
@@ -5249,22 +5494,7 @@ function initMap() {
     console.log('✅ Map initialized for optimization algorithms');
 }
 
-// ✅ INTEGRATED: Global initMap for Google Maps callback (ensure it's not overridden)
-window.initMap = function() {
-    console.log('🚀 Google Maps API loaded via callback. Initializing Smart Bus Route Optimizer...');
-    // Clear any waiting intervals
-    if (window.waitForGoogleMaps) {
-        clearInterval(window.waitForGoogleMaps);
-    }
-    // Small delay to ensure DOM is ready
-    setTimeout(() => {
-        if (document.readyState === 'complete') {
-            initializeApp();
-        } else {
-            document.addEventListener('DOMContentLoaded', initializeApp);
-        }
-    }, 100);
-};
+// initMap function is already defined at the top of the file
 
 // ✅ INTEGRATED: checkServerStatus function from googleAPI.js
 function checkServerStatus() {
