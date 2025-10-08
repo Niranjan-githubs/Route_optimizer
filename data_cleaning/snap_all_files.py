@@ -372,9 +372,9 @@ def process_specific_files():
     # Define specific file mappings
     files_to_process = [
         {
-            'input': 'cleaned_master_centroids.csv',
-            'normal_output': 'cleaned_master_snapped.csv',
-            'outlier_output': 'cleaned_master_snap_outliers.csv'
+            'input': 'cleaned_oct2_centroids.csv',
+            'normal_output': 'cleaned_oct2_snapped.csv',
+            'outlier_output': 'cleaned_oct2_snap_outliers.csv'
         
         }
         

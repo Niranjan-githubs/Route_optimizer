@@ -3,6 +3,8 @@ require('dotenv').config(); // Load environment variables from .env file
 const express = require('express');
 const { GoogleAuth } = require('google-auth-library');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -203,6 +205,130 @@ app.get('/api/health', (req, res) => {
         timestamp: new Date().toISOString()
     });
 });
+
+// ==================== ROUTE CACHING ENDPOINTS ====================
+
+// Directory for cached routes
+const CACHE_DIR = path.join(__dirname, 'cached_routes');
+
+// Ensure cache directory exists
+if (!fs.existsSync(CACHE_DIR)) {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    console.log('📁 Created cached_routes directory');
+}
+
+// Save optimized routes
+app.post('/api/cache-routes', (req, res) => {
+    try {
+        const { name, routes, metadata } = req.body;
+        
+        if (!name || !routes) {
+            return res.status(400).json({ error: 'name and routes are required' });
+        }
+        
+        const cacheData = {
+            name,
+            routes,
+            metadata: metadata || {},
+            savedAt: new Date().toISOString()
+        };
+        
+        // Sanitize filename to prevent security issues
+        console.log('🔍 Server received name:', name, 'type:', typeof name);
+        const nameStr = String(name || 'unnamed');
+        console.log('🔍 nameStr after conversion:', nameStr, 'type:', typeof nameStr);
+        const sanitizedName = nameStr.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+        const filename = `routes_${sanitizedName}.json`;
+        const filepath = path.join(CACHE_DIR, filename);
+        
+        fs.writeFileSync(filepath, JSON.stringify(cacheData, null, 2));
+        
+        console.log(`✅ Routes cached successfully: ${filename}`);
+        res.json({ 
+            success: true, 
+            message: 'Routes cached successfully',
+            filename 
+        });
+    } catch (error) {
+        console.error('❌ Error caching routes:', error);
+        res.status(500).json({ error: 'Failed to cache routes', details: error.message });
+    }
+});
+
+// Load cached routes by name
+app.get('/api/cached-routes/:name', (req, res) => {
+    try {
+        const { name } = req.params;
+        // Sanitize filename to match the saved format
+        const nameStr = String(name || 'unnamed');
+        const sanitizedName = nameStr.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+        const filename = `routes_${sanitizedName}.json`;
+        const filepath = path.join(CACHE_DIR, filename);
+        
+        if (!fs.existsSync(filepath)) {
+            return res.status(404).json({ error: 'Cached routes not found' });
+        }
+        
+        const cacheData = JSON.parse(fs.readFileSync(filepath, 'utf8'));
+        
+        console.log(`📦 Loaded cached routes: ${filename}`);
+        res.json(cacheData);
+    } catch (error) {
+        console.error('❌ Error loading cached routes:', error);
+        res.status(500).json({ error: 'Failed to load cached routes', details: error.message });
+    }
+});
+
+// List all cached routes
+app.get('/api/cached-routes', (req, res) => {
+    try {
+        const files = fs.readdirSync(CACHE_DIR)
+            .filter(file => file.startsWith('routes_') && file.endsWith('.json'))
+            .map(file => {
+                const filepath = path.join(CACHE_DIR, file);
+                const stats = fs.statSync(filepath);
+                const data = JSON.parse(fs.readFileSync(filepath, 'utf8'));
+                
+                return {
+                    filename: file,
+                    name: data.name || data.timestamp || 'Unnamed Route',
+                    savedAt: data.savedAt,
+                    routeCount: data.routes?.length || 0,
+                    metadata: data.metadata || {}
+                };
+            })
+            .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
+        
+        console.log(`📋 Found ${files.length} cached route sets`);
+        res.json({ routes: files });
+    } catch (error) {
+        console.error('❌ Error listing cached routes:', error);
+        res.status(500).json({ error: 'Failed to list cached routes', details: error.message });
+    }
+});
+
+// Delete cached routes by timestamp
+app.delete('/api/cached-routes/:name', (req, res) => {
+    try {
+        const { name } = req.params;
+        const filename = `routes_${name}.json`;
+        const filepath = path.join(CACHE_DIR, filename);
+        
+        if (!fs.existsSync(filepath)) {
+            return res.status(404).json({ error: 'Cached routes not found' });
+        }
+        
+        fs.unlinkSync(filepath);
+        
+        console.log(`🗑️ Deleted cached routes: ${filename}`);
+        res.json({ success: true, message: 'Cached routes deleted' });
+    } catch (error) {
+        console.error('❌ Error deleting cached routes:', error);
+        res.status(500).json({ error: 'Failed to delete cached routes', details: error.message });
+    }
+});
+
+// ==================== END ROUTE CACHING ENDPOINTS ====================
 
 // Error handling middleware
 app.use((error, req, res, next) => {

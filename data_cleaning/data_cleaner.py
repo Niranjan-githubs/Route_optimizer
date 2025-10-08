@@ -113,9 +113,9 @@ def clean_bus_data(input_file, output_file, outliers_file, college_lat=13.008742
 # Example usage
 if __name__ == "__main__":
     # Update these paths according to your file locations
-    input_file = "1stround_master.csv"  # Your input file
-    output_file = "cleaned_master.csv"  # Clean data output
-    outliers_file = "cleaned_master_outliers.csv"  # Outliers output
+    input_file = "Route_optimizer/data_cleaning/transport_oct2.csv"  # Your input file
+    output_file = "cleaned_oct2.csv"  # Clean data output
+    outliers_file = "cleaned_oct2_outliers.csv"  # Outliers output
     
     try:
         clean_data, outliers = clean_bus_data(input_file, output_file, outliers_file)

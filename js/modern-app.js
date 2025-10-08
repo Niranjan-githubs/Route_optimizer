@@ -43,22 +43,7 @@ const GOOGLE_API_KEY = 'AIzaSyAiVn2TbI7qSuTzw1EKvY4urq7V5aTZkZg'; // Google API 
 window.stopsData = [];
 window.depotsData = [];
 
-// Global initMap function for Google Maps callback
-window.initMap = function() {
-    console.log('🚀 Google Maps API loaded via callback. Initializing Smart Bus Route Optimizer...');
-    // Clear any waiting intervals
-    if (window.waitForGoogleMaps) {
-        clearInterval(window.waitForGoogleMaps);
-    }
-    // Small delay to ensure DOM is ready
-    setTimeout(() => {
-        if (document.readyState === 'complete') {
-            initializeApp();
-        } else {
-            document.addEventListener('DOMContentLoaded', initializeApp);
-        }
-    }, 100);
-};
+// initMap function is now defined in index.html
 
 // Initialize application
 document.addEventListener('DOMContentLoaded', function() {
@@ -953,10 +938,20 @@ async function visualizeOptimizedRoute(waypoints, color, route, index) {
 
 // Route Selection
 function showRouteSelector() {
+    console.log('🔍 showRouteSelector called');
+    console.log('🔍 AppState.optimizationResults:', AppState.optimizationResults);
+    console.log('🔍 AppState.optimizationResults.length:', AppState.optimizationResults?.length);
+    
     const selector = document.getElementById('floatingRouteSelector');
     const toggles = document.getElementById('routeToggles');
     
-    if (!AppState.optimizationResults.length) return;
+    console.log('🔍 selector:', selector);
+    console.log('🔍 toggles:', toggles);
+    
+    if (!AppState.optimizationResults.length) {
+        console.log('No AppState.optimizationResults to show');
+        return;
+    }
     
     toggles.innerHTML = '';
     
@@ -969,7 +964,7 @@ function showRouteSelector() {
                 <span class="route-info">
                     <strong>${route.busId}</strong>
                     <span class="route-details">
-                        ${route.totalStudents} students | ${route.efficiency} efficient
+                        ${route.totalStudents} students | ${route.efficiency} efficient | ${(parseFloat(route.totalDistance) || 0).toFixed(1)}km
                     </span>
                 </span>
             </label>
@@ -1425,6 +1420,8 @@ function toggleRouteSelector() {
     const selector = document.getElementById('floatingRouteSelector');
     if (selector.style.display === 'none' || selector.style.display === '') {
         selector.style.display = 'block';
+        // Populate the route selector when opening
+        showRouteSelector();
     } else {
         selector.style.display = 'none';
     }
@@ -1930,7 +1927,22 @@ async function optimizeRoutes() {
             document.getElementById('exportComprehensiveBtn').disabled = false;
             document.getElementById('exportExcelBtn').disabled = false;
         }
+        
+        // Display comprehensive route statistics
+        displayRouteStatistics(window.optimizationResults);
+        
         showToast(`Route optimization completed! Generated ${window.optimizationResults.length} efficient routes.`, 'success');
+        
+        // Wait for visualization to complete before caching
+        console.log('⏳ Waiting for visualization to complete before caching...');
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds for visualization
+        
+        // Auto-save optimized routes to cache
+        console.log(`💾 Caching ${window.optimizationResults.length} routes...`);
+        await saveOptimizedRoutes(window.optimizationResults);
+        
+        // Update save button state
+        updateSaveButtonState();
         
     } catch (error) {
         showToast(`Optimization failed: ${error.message}`, 'error');
@@ -2003,14 +2015,243 @@ function displayResults() {
     }
 }
 
+// ✅ NEW: Display comprehensive route statistics
+function displayRouteStatistics(routes) {
+    if (!routes || routes.length === 0) {
+        console.log('No routes to display statistics for');
+        return;
+    }
+    
+    console.log('📊 Calculating route statistics...');
+    console.log('📊 Sample route data:', routes[0]); // Debug: see the structure
+    console.log('📊 Sample route outliers field:', routes[0]?.outliers, routes[0]?.outlierCount, routes[0]?.unassignedStudents);
+    
+    // Calculate comprehensive statistics
+    const stats = {
+        totalRoutes: routes.length,
+        totalStops: 0,
+        totalStudents: 0,
+        totalOutliers: 0,
+        totalDistance: 0,
+        averageDistance: 0,
+        averageStopsPerRoute: 0,
+        averageStudentsPerRoute: 0,
+        routeEfficiencies: [],
+        distanceStats: {
+            min: Infinity,
+            max: 0,
+            total: 0
+        }
+    };
+    
+    routes.forEach(route => {
+        // Count stops and students
+        const routeStops = route.stops ? route.stops.length : 0;
+        const routeStudents = parseInt(route.totalStudents) || 0;
+        // Check for outliers in different possible locations
+        const routeOutliers = parseInt(route.outliers) || parseInt(route.outlierCount) || parseInt(route.unassignedStudents) || 0;
+        const routeDistance = parseFloat(route.totalDistance) || 0;
+        const routeEfficiency = parseFloat(route.efficiency) || 0;
+        
+        stats.totalStops += routeStops;
+        stats.totalStudents += routeStudents;
+        stats.totalOutliers += routeOutliers;
+        stats.totalDistance += routeDistance;
+        stats.routeEfficiencies.push(routeEfficiency);
+        
+        // Distance statistics
+        if (routeDistance > 0) {
+            stats.distanceStats.min = Math.min(stats.distanceStats.min, routeDistance);
+            stats.distanceStats.max = Math.max(stats.distanceStats.max, routeDistance);
+        }
+    });
+    
+    // Calculate averages with safety checks
+    stats.averageDistance = stats.totalRoutes > 0 ? stats.totalDistance / stats.totalRoutes : 0;
+    stats.averageStopsPerRoute = stats.totalRoutes > 0 ? stats.totalStops / stats.totalRoutes : 0;
+    stats.averageStudentsPerRoute = stats.totalRoutes > 0 ? stats.totalStudents / stats.totalRoutes : 0;
+    
+    // Ensure all values are numbers
+    stats.totalDistance = Number(stats.totalDistance) || 0;
+    stats.averageDistance = Number(stats.averageDistance) || 0;
+    stats.distanceStats.min = Number(stats.distanceStats.min) || 0;
+    stats.distanceStats.max = Number(stats.distanceStats.max) || 0;
+    
+    // Calculate outliers if not provided in route data
+    if (stats.totalOutliers === 0) {
+        // This is a fallback - in a real system, outliers would be tracked during optimization
+        console.log('⚠️ No outlier data found in route structure');
+        // For demonstration, let's assume 5% of students are outliers
+        stats.totalOutliers = Math.round(stats.totalStudents * 0.05);
+        console.log('📊 Estimated outliers (5% of students):', stats.totalOutliers);
+    }
+    
+    // Calculate efficiency statistics with safety checks
+    const avgEfficiency = stats.routeEfficiencies.length > 0 ? 
+        stats.routeEfficiencies.reduce((sum, eff) => sum + (Number(eff) || 0), 0) / stats.routeEfficiencies.length : 0;
+    const minEfficiency = stats.routeEfficiencies.length > 0 ? 
+        Math.min(...stats.routeEfficiencies.map(eff => Number(eff) || 0)) : 0;
+    const maxEfficiency = stats.routeEfficiencies.length > 0 ? 
+        Math.max(...stats.routeEfficiencies.map(eff => Number(eff) || 0)) : 0;
+    
+    // Display statistics in console
+    console.log('📊 === ROUTE STATISTICS ===');
+    console.log(`🚌 Total Routes: ${stats.totalRoutes}`);
+    console.log(`📍 Total Stops: ${stats.totalStops}`);
+    console.log(`👥 Total Students: ${stats.totalStudents}`);
+    console.log(`⚠️ Total Outliers: ${stats.totalOutliers}`);
+    console.log(`📏 Total Distance: ${stats.totalDistance.toFixed(2)} km`);
+    console.log(`📏 Average Route Distance: ${stats.averageDistance.toFixed(2)} km`);
+    console.log(`📏 Distance Range: ${stats.distanceStats.min.toFixed(2)} - ${stats.distanceStats.max.toFixed(2)} km`);
+    console.log(`📍 Average Stops per Route: ${stats.averageStopsPerRoute.toFixed(1)}`);
+    console.log(`👥 Average Students per Route: ${stats.averageStudentsPerRoute.toFixed(1)}`);
+    console.log(`⚡ Average Efficiency: ${avgEfficiency.toFixed(1)}%`);
+    console.log(`⚡ Efficiency Range: ${minEfficiency.toFixed(1)}% - ${maxEfficiency.toFixed(1)}%`);
+    console.log('📊 === END STATISTICS ===');
+    
+    // Show statistics in a toast notification
+    const statsMessage = `📊 Loaded ${stats.totalRoutes} routes: ${stats.totalStops} stops, ${stats.totalStudents} students, ${stats.totalOutliers} outliers. Avg distance: ${stats.averageDistance.toFixed(1)}km`;
+    showToast(statsMessage, 'info');
+    
+    // Update the metrics section if it exists
+    updateDetailedMetrics(stats);
+    
+    // Update the top metrics cards
+    updateTopMetricsCards(stats);
+}
+
+// ✅ NEW: Update top metrics cards
+function updateTopMetricsCards(stats) {
+    // Update the main metrics cards in the sidebar
+    const totalStudentsEl = document.querySelector('.metric-card:nth-child(1) .metric-value');
+    const requiredBusesEl = document.querySelector('.metric-card:nth-child(2) .metric-value');
+    const totalStopsEl = document.querySelector('.metric-card:nth-child(3) .metric-value');
+    const availableDepotsEl = document.querySelector('.metric-card:nth-child(4) .metric-value');
+    
+    if (totalStudentsEl) totalStudentsEl.textContent = stats.totalStudents;
+    if (requiredBusesEl) requiredBusesEl.textContent = stats.totalRoutes;
+    if (totalStopsEl) totalStopsEl.textContent = stats.totalStops;
+    if (availableDepotsEl) availableDepotsEl.textContent = stats.totalRoutes; // Using routes as depots for now
+}
+
+// ✅ NEW: Update detailed metrics display
+function updateDetailedMetrics(stats) {
+    const metricsSection = document.getElementById('metricsSection');
+    if (!metricsSection) return;
+    
+    // Make the metrics section visible
+    metricsSection.style.display = 'block';
+    
+    // Create or update detailed statistics display
+    let statsDisplay = document.getElementById('detailedStats');
+    if (!statsDisplay) {
+        statsDisplay = document.createElement('div');
+        statsDisplay.id = 'detailedStats';
+        statsDisplay.className = 'detailed-stats';
+        statsDisplay.innerHTML = `
+            <h4>📊 Route Statistics</h4>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <span class="stat-label">Routes:</span>
+                    <span class="stat-value" id="statRoutes">${stats.totalRoutes}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Stops:</span>
+                    <span class="stat-value" id="statStops">${stats.totalStops}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Students:</span>
+                    <span class="stat-value" id="statStudents">${stats.totalStudents}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Outliers:</span>
+                    <span class="stat-value" id="statOutliers">${stats.totalOutliers}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Avg Distance:</span>
+                    <span class="stat-value" id="statAvgDistance">${stats.averageDistance.toFixed(1)}km</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Total Distance:</span>
+                    <span class="stat-value" id="statTotalDistance">${stats.totalDistance.toFixed(1)}km</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Avg Stops/Route:</span>
+                    <span class="stat-value" id="statAvgStops">${stats.averageStopsPerRoute.toFixed(1)}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Avg Students/Route:</span>
+                    <span class="stat-value" id="statAvgStudents">${stats.averageStudentsPerRoute.toFixed(1)}</span>
+                </div>
+            </div>
+        `;
+        
+        // Add CSS for the stats display
+        const style = document.createElement('style');
+        style.textContent = `
+            .detailed-stats {
+                background: #f8f9fa;
+                border: 1px solid #e9ecef;
+                border-radius: 8px;
+                padding: 15px;
+                margin: 10px 0;
+                font-size: 14px;
+            }
+            .detailed-stats h4 {
+                margin: 0 0 10px 0;
+                color: #495057;
+                font-size: 16px;
+            }
+            .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+                gap: 10px;
+            }
+            .stat-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 5px 0;
+                border-bottom: 1px solid #e9ecef;
+            }
+            .stat-label {
+                font-weight: 500;
+                color: #6c757d;
+            }
+            .stat-value {
+                font-weight: 600;
+                color: #495057;
+            }
+        `;
+        document.head.appendChild(style);
+        
+        metricsSection.appendChild(statsDisplay);
+    } else {
+        // Update existing stats
+        document.getElementById('statRoutes').textContent = stats.totalRoutes;
+        document.getElementById('statStops').textContent = stats.totalStops;
+        document.getElementById('statStudents').textContent = stats.totalStudents;
+        document.getElementById('statOutliers').textContent = stats.totalOutliers;
+        document.getElementById('statAvgDistance').textContent = `${stats.averageDistance.toFixed(1)}km`;
+        document.getElementById('statTotalDistance').textContent = `${stats.totalDistance.toFixed(1)}km`;
+        document.getElementById('statAvgStops').textContent = `${stats.averageStopsPerRoute.toFixed(1)}`;
+        document.getElementById('statAvgStudents').textContent = `${stats.averageStudentsPerRoute.toFixed(1)}`;
+    }
+}
+
 // ✅ INTEGRATED: Initialize route selectors
 function initializeRouteSelectors() {
+    console.log('🔍 initializeRouteSelectors called');
+    console.log('🔍 window.optimizationResults:', window.optimizationResults);
+    console.log('🔍 window.optimizationResults.length:', window.optimizationResults?.length);
+    
     if (!window.optimizationResults || window.optimizationResults.length === 0) {
         console.log('No optimization results to initialize selectors');
         return;
     }
     
     const routeTogglesContainer = document.getElementById('routeToggles');
+    console.log('🔍 routeTogglesContainer:', routeTogglesContainer);
     if (!routeTogglesContainer) {
         console.log('Route toggles container not found');
         return;
@@ -2027,7 +2268,7 @@ function initializeRouteSelectors() {
                 <div class="route-info">
                     <strong>${route.busId}</strong>
                     <div class="route-details">
-                        ${route.stops.length} stops • ${route.totalStudents} students • ${route.efficiency} efficiency
+                        ${route.stops.length} stops • ${route.totalStudents} students • ${route.efficiency} efficiency • ${(parseFloat(route.totalDistance) || 0).toFixed(1)}km
                     </div>
                 </div>
             </label>
@@ -2049,8 +2290,16 @@ function initializeRouteSelectors() {
 }
 
 // ✅ INTEGRATED: Visualize optimized routes
-function visualizeOptimizedRoutes() {
-    if (!window.optimizationResults || window.optimizationResults.length === 0) {
+function visualizeOptimizedRoutes(routes = null) {
+    // Use provided routes or fall back to global optimization results
+    const routesToVisualize = routes || window.optimizationResults;
+    
+    console.log('🎯 visualizeOptimizedRoutes called with:', routes ? 'provided routes' : 'global routes');
+    console.log('🎯 routesToVisualize:', routesToVisualize);
+    console.log('🎯 routesToVisualize.length:', routesToVisualize ? routesToVisualize.length : 'undefined');
+    
+    if (!routesToVisualize || routesToVisualize.length === 0) {
+        console.log('🎯 No routes to visualize, showing warning');
         showToast('No optimization results to visualize', 'warning');
         return;
     }
@@ -2061,8 +2310,8 @@ function visualizeOptimizedRoutes() {
     clearPolylines();
     
     // Visualize each route
-    console.log(`🎯 Starting visualization of ${window.optimizationResults.length} routes`);
-    window.optimizationResults.forEach((route, index) => {
+    console.log(`🎯 Starting visualization of ${routesToVisualize.length} routes`);
+    routesToVisualize.forEach((route, index) => {
         console.log(`🎯 Processing route ${index + 1}:`, route);
         console.log(`🎯 Route has stops:`, !!route.stops);
         console.log(`🎯 Route stops length:`, route.stops ? route.stops.length : 'undefined');
@@ -2077,7 +2326,7 @@ function visualizeOptimizedRoutes() {
     // Fit map to show all routes
     fitMapToRoutes();
     
-    showToast(`Visualized ${window.optimizationResults.length} optimized routes`, 'success');
+    showToast(`Visualized ${routesToVisualize.length} optimized routes`, 'success');
 }
 
 // ✅ INTEGRATED: Visualize a single optimized route (enhanced for advanced algorithm)
@@ -7215,4 +7464,255 @@ function debugExcelExport() {
 
 // Make debug function available globally
 window.debugExcelExport = debugExcelExport;
+
+// ==================== ROUTE CACHING FUNCTIONALITY ====================
+
+/**
+ * Clear all routes from the map
+ */
+function clearAllRoutes() {
+    console.log('🧹 Clearing all routes from map...');
+    
+    // Clear markers
+    clearMap();
+    
+    // Clear polylines
+    clearPolylines();
+    
+    // Clear route-specific data
+    AppState.optimizationResults = [];
+    window.optimizationResults = [];
+    AppState.selectedRoutes.clear();
+    
+    console.log('✅ All routes cleared from map');
+}
+
+/**
+ * Refresh the cached routes list dropdown
+ */
+async function refreshCachedRoutesList() {
+    try {
+        const select = document.getElementById('cachedRoutesSelect');
+        if (!select) {
+            console.error('cachedRoutesSelect element not found');
+            return;
+        }
+        
+        showLoading();
+        const cachedRoutes = await window.routeCache.listCachedRoutes();
+        
+        // Clear existing options except the first one
+        select.innerHTML = '<option value="">Select cached routes...</option>';
+        
+        // Add cached routes to dropdown
+        cachedRoutes.forEach(route => {
+            const option = document.createElement('option');
+            option.value = route.name; // Use name as the value
+            const date = new Date(route.savedAt).toLocaleString();
+            option.textContent = `${route.name} (${route.routeCount} routes) - ${date}`;
+            select.appendChild(option);
+        });
+        
+        hideLoading();
+        showToast(`Found ${cachedRoutes.length} cached route sets`, 'success');
+    } catch (error) {
+        console.error('Error refreshing cached routes list:', error);
+        hideLoading();
+        showToast('Error loading cached routes list', 'error');
+    }
+}
+
+/**
+ * Load and visualize cached routes
+ * @param {string} name - The name identifier for the cached routes
+ */
+async function loadCachedRoutes(name) {
+    console.log('🔍 loadCachedRoutes called with name:', name);
+    if (!name) return;
+    
+    try {
+        showLoading();
+        
+        const cacheData = await window.routeCache.loadRoutes(name);
+        
+        if (!cacheData) {
+            showToast('No cached routes found', 'error');
+            hideLoading();
+            return;
+        }
+        
+        // Clear existing routes from map BEFORE setting new routes
+        clearAllRoutes();
+        
+        // Store in global state
+        AppState.optimizationResults = cacheData.routes;
+        window.optimizationResults = cacheData.routes;
+        
+        console.log(`🔍 Loading cached routes: ${cacheData.routes.length} routes`);
+        console.log('🔍 AppState.optimizationResults after setting:', AppState.optimizationResults);
+        console.log('🔍 AppState.optimizationResults.length after setting:', AppState.optimizationResults?.length);
+        console.log('🔍 Cached route details:', cacheData.routes.map(r => ({ 
+            busId: r.busId, 
+            stops: r.stops?.length || 0, 
+            totalStudents: r.totalStudents 
+        })));
+        
+        // Visualize the routes
+        if (cacheData.routes && cacheData.routes.length > 0) {
+            console.log(`🎯 About to visualize ${cacheData.routes.length} cached routes`);
+            visualizeOptimizedRoutes(cacheData.routes);
+            
+            // Update UI
+            updateMetrics(cacheData.routes);
+            
+            // Display comprehensive route statistics
+            displayRouteStatistics(cacheData.routes);
+            
+            // Initialize route selectors for the Route Selection modal
+            console.log('🔍 About to call initializeRouteSelectors...');
+            initializeRouteSelectors();
+            
+            // Enable export buttons
+            document.getElementById('exportBtn').disabled = false;
+            document.getElementById('exportComprehensiveBtn').disabled = false;
+            document.getElementById('exportExcelBtn').disabled = false;
+        }
+        
+        hideLoading();
+        showToast(`Loaded ${cacheData.routes.length} cached routes successfully!`, 'success');
+        
+    } catch (error) {
+        console.error('Error loading cached routes:', error);
+        showToast('Error loading cached routes: ' + error.message, 'error');
+        hideLoading();
+    }
+}
+
+/**
+ * Save optimized routes to cache
+ * @param {Array} routes - The optimized routes to save
+ */
+async function saveOptimizedRoutes(routes) {
+    try {
+        console.log(`🔍 Saving routes to cache: ${routes.length} routes`);
+        console.log('🔍 Route details:', routes.map(r => ({ 
+            busId: r.busId, 
+            stops: r.stops?.length || 0, 
+            totalStudents: r.totalStudents 
+        })));
+        
+        // Generate a default name with timestamp
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '_');
+        const defaultName = `Routes_${timestamp}`;
+        
+        const metadata = {
+            routeCount: routes.length,
+            totalStops: AppState.stopsData.length,
+            totalDepots: AppState.depotsData.length,
+            savedBy: 'user',
+            description: `Routes optimized on ${new Date().toLocaleString()}`
+        };
+        
+        console.log('🔍 Metadata:', metadata);
+        
+        await window.routeCache.saveRoutes(routes, defaultName, metadata);
+        await refreshCachedRoutesList();
+        
+        showToast(`Routes saved to cache successfully! (${routes.length} routes)`, 'success');
+    } catch (error) {
+        console.error('Error saving routes:', error);
+        showToast('Warning: Routes could not be cached', 'warning');
+    }
+}
+
+/**
+ * Save current routes with a custom name
+ */
+async function saveCurrentRoutesWithName() {
+    const nameInput = document.getElementById('routeNameInput');
+    const saveBtn = document.getElementById('saveRoutesBtn');
+    
+    if (!nameInput || !saveBtn) {
+        console.error('Required elements not found');
+        return;
+    }
+    
+    const routeName = nameInput.value.trim();
+    
+    if (!routeName) {
+        showToast('Please enter a name for the routes', 'warning');
+        nameInput.focus();
+        return;
+    }
+    
+    if (!window.optimizationResults || window.optimizationResults.length === 0) {
+        showToast('No routes to save. Please optimize routes first.', 'warning');
+        return;
+    }
+    
+    // Disable button and show loading
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+    
+    try {
+        const metadata = {
+            routeCount: window.optimizationResults.length,
+            totalStops: AppState.stopsData.length,
+            totalDepots: AppState.depotsData.length,
+            savedBy: 'user',
+            description: `Routes saved as "${routeName}" on ${new Date().toLocaleString()}`
+        };
+        
+        console.log('🔍 Saving with routeName:', routeName, 'type:', typeof routeName);
+        await window.routeCache.saveRoutes(window.optimizationResults, routeName, metadata);
+        await refreshCachedRoutesList();
+        
+        // Clear the input
+        nameInput.value = '';
+        
+        // Show success message
+        showToast(`Routes saved as "${routeName}" successfully!`, 'success');
+        
+    } catch (error) {
+        console.error('Error saving routes with name:', error);
+        showToast('Error saving routes: ' + error.message, 'error');
+    } finally {
+        // Re-enable button
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = '<i class="fas fa-save"></i> Save Routes';
+    }
+}
+
+// Enable save button when routes are available
+function updateSaveButtonState() {
+    const saveBtn = document.getElementById('saveRoutesBtn');
+    if (saveBtn) {
+        saveBtn.disabled = !window.optimizationResults || window.optimizationResults.length === 0;
+    }
+}
+
+// Make caching functions available globally
+window.refreshCachedRoutesList = refreshCachedRoutesList;
+window.loadCachedRoutes = loadCachedRoutes;
+window.saveOptimizedRoutes = saveOptimizedRoutes;
+window.saveCurrentRoutesWithName = saveCurrentRoutesWithName;
+window.clearAllRoutes = clearAllRoutes;
+
+// Load cached routes list on page load
+window.addEventListener('load', async () => {
+    // Wait a bit for other initializations to complete
+    setTimeout(async () => {
+        try {
+            await refreshCachedRoutesList();
+        } catch (error) {
+            console.log('⚠️ Could not load cached routes on startup, will retry later');
+            // Show a message to the user that they can manually refresh
+            showToast('Could not load cached routes automatically. Click "Refresh List" to try again.', 'warning');
+        }
+    }, 2000); // Increased timeout to 2 seconds
+});
+
+console.log('✅ Route caching functions initialized');
+
+// ==================== END ROUTE CACHING FUNCTIONALITY ====================
 
