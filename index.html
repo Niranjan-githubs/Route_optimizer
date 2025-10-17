@@ -116,6 +116,31 @@
                 </button>
             </div>
             
+            <!-- Route Search -->
+            <div class="route-search-container">
+                <!-- Search Mode Toggle -->
+                <div class="search-mode-toggle">
+                    <button class="search-mode-btn active" id="busNumberMode" onclick="setSearchMode('bus')">
+                        <i class="fas fa-bus"></i> Bus Number
+                    </button>
+                    <button class="search-mode-btn" id="areaMode" onclick="setSearchMode('area')">
+                        <i class="fas fa-map-marker-alt"></i> Area
+                    </button>
+                </div>
+                
+                <div class="search-input-wrapper">
+                    <input type="text" id="routeSearchInput" placeholder="Search routes by bus number..." 
+                           oninput="filterRoutes()">
+                    <i class="fas fa-search search-icon"></i>
+                    <button class="clear-search-btn" onclick="clearRouteSearch()" title="Clear search">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="search-results-info" id="searchResultsInfo" style="display: none;">
+                    <span id="searchResultsCount">0</span> routes found
+                </div>
+            </div>
+            
                          <!-- Quick Filters -->
              <div class="quick-filters">
                  <button class="filter-btn active" data-filter="all">
@@ -309,6 +334,9 @@
                     </button>
                     <button onclick="refreshCachedRoutesList()" class="btn btn-secondary btn-full">
                         <i class="fas fa-sync-alt"></i> Refresh List
+                    </button>
+                    <button onclick="clearAllCachedRoutes()" class="btn btn-warning btn-full" style="background: #f59e0b; color: white;">
+                        <i class="fas fa-trash-alt"></i> Clear All Cached Routes
                     </button>
                 </div>
             </div>

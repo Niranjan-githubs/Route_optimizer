@@ -217,17 +217,7 @@ function setupEventListeners() {
             }
         }
         
-        // ✅ NEW: Ruler mode toggle with 'R' key
-        if (e.key === 'r' || e.key === 'R') {
-            e.preventDefault();
-            toggleRulerMode();
-        }
-        
-        // ✅ NEW: Draggable mode toggle with 'D' key
-        if (e.key === 'd' || e.key === 'D') {
-            e.preventDefault();
-            toggleDraggableMode();
-        }
+        // Ruler and Draggable mode shortcuts removed - use buttons only
     });
 }
 
@@ -681,6 +671,10 @@ function finalizeCluster(cluster) {
     cluster.totalDistance = `${totalDistance.toFixed(1)} km`;
     cluster.estimatedDistance = totalDistance;
     cluster.depot = AppState.depotsData[0]?.['Parking Name'] || 'Main Depot';
+    
+    // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+    const estimatedTimeMinutes = Math.round((totalDistance / 25) * 60);
+    cluster.estimatedTime = `${estimatedTimeMinutes} min`;
 }
 
 // Simulation (replace with actual API)
@@ -985,6 +979,19 @@ function showRouteSelector() {
     AppState.optimizationResults.forEach((_, index) => {
         AppState.selectedRoutes.add(index);
     });
+    
+    // Clear search input and reset search results
+    const searchInput = document.getElementById('routeSearchInput');
+    const searchResultsInfo = document.getElementById('searchResultsInfo');
+    if (searchInput) {
+        searchInput.value = '';
+    }
+    if (searchResultsInfo) {
+        searchResultsInfo.style.display = 'none';
+    }
+    
+    // Initialize select all buttons
+    updateSelectAllButtons();
 }
 
 // Route Toggle Handler
@@ -996,6 +1003,7 @@ function handleRouteToggle(routeIndex, isVisible) {
     }
     
     updateRouteVisibility();
+    updateSelectAllButtons();
 }
 
 // Update Route Visibility
@@ -1380,12 +1388,9 @@ function exportResults() {
                     stop_lat: stop.snapped_lat,
                     stop_lon: stop.snapped_lon,
                     students_pickup: stop.num_students,
-                    road_type: stop.route_type,
-                    road_name: stop.route_name,
                     total_students_in_bus: route.totalStudents,
                     bus_efficiency: route.efficiency,
-                    shift_time: shiftTime,
-                    day_of_week: dayOfWeek
+                    estimated_time: route.estimatedTime || 'N/A'
                 });
             });
         });
@@ -1520,6 +1525,9 @@ window.toggleRouteSelector = toggleRouteSelector;
 // Route Selection Functions
 window.selectAllRoutes = selectAllRoutes;
 window.deselectAllRoutes = deselectAllRoutes;
+window.filterRoutes = filterRoutes;
+window.clearRouteSearch = clearRouteSearch;
+window.setSearchMode = setSearchMode;
 
 // Map Control Functions
 window.searchLocation = searchLocation;
@@ -1534,7 +1542,7 @@ window.testGeocoding = testGeocoding;
 
 // Route Selection Functions
 function selectAllRoutes() {
-    const checkboxes = document.querySelectorAll('.route-checkbox');
+    const checkboxes = document.querySelectorAll('.route-checkbox:not([style*="display: none"])');
     checkboxes.forEach(checkbox => {
         checkbox.checked = true;
         const routeIndex = parseInt(checkbox.dataset.routeIndex);
@@ -1543,11 +1551,12 @@ function selectAllRoutes() {
         }
     });
     updateRouteVisibility();
-    showToast('All routes selected', 'success');
+    updateSelectAllButtons();
+    showToast(`${checkboxes.length} routes selected`, 'success');
 }
 
 function deselectAllRoutes() {
-    const checkboxes = document.querySelectorAll('.route-checkbox');
+    const checkboxes = document.querySelectorAll('.route-checkbox:not([style*="display: none"])');
     checkboxes.forEach(checkbox => {
         checkbox.checked = false;
         const routeIndex = parseInt(checkbox.dataset.routeIndex);
@@ -1556,7 +1565,272 @@ function deselectAllRoutes() {
         }
     });
     updateRouteVisibility();
-    showToast('All routes deselected', 'info');
+    updateSelectAllButtons();
+    showToast(`${checkboxes.length} routes deselected`, 'info');
+}
+
+// Global search mode state
+let currentSearchMode = 'bus'; // 'bus' or 'area'
+let searchTimeout = null; // For debouncing search
+
+// Predefined area coordinates for Chennai
+const AREA_COORDINATES = {
+    'arumbakkam': { lat: 13.0475, lng: 80.2114, radius: 0.05 },
+    'madhavaram': { lat: 13.1497, lng: 80.2314, radius: 0.08 },
+    'anna nagar': { lat: 13.0827, lng: 80.2200, radius: 0.06 },
+    'tambaram': { lat: 12.9246, lng: 80.1270, radius: 0.08 },
+    'velachery': { lat: 12.9818, lng: 80.2200, radius: 0.06 },
+    'chrompet': { lat: 12.9516, lng: 80.1432, radius: 0.05 },
+    'guindy': { lat: 13.0067, lng: 80.2206, radius: 0.04 },
+    'adyar': { lat: 13.0067, lng: 80.2206, radius: 0.05 },
+    'mylapore': { lat: 13.0339, lng: 80.2628, radius: 0.04 },
+    't.nagar': { lat: 13.0418, lng: 80.2341, radius: 0.04 },
+    'ashok nagar': { lat: 13.0418, lng: 80.2341, radius: 0.04 },
+    'kodambakkam': { lat: 13.0515, lng: 80.2300, radius: 0.04 },
+    'nungambakkam': { lat: 13.0615, lng: 80.2400, radius: 0.04 },
+    'kilpauk': { lat: 13.0815, lng: 80.2400, radius: 0.04 },
+    'perambur': { lat: 13.1150, lng: 80.2400, radius: 0.05 }
+};
+
+// Helper function to calculate distance between two coordinates
+function calculateDistance(lat1, lng1, lat2, lng2) {
+    const R = 6371; // Earth's radius in kilometers
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLng/2) * Math.sin(dLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+}
+
+// Helper function to calculate estimated time for a stop
+function calculateStopEstimatedTime(stop, route) {
+    // Calculate time based on cumulative distance and average speed
+    const cumulativeDistance = parseFloat(stop.cumulativeDistance || 0);
+    const averageSpeed = 25; // km/h in city traffic
+    const estimatedMinutes = Math.round((cumulativeDistance / averageSpeed) * 60);
+    
+    // Format as time (assuming 8:00 AM start)
+    const startHour = 8;
+    const startMinute = 0;
+    const totalMinutes = startMinute + estimatedMinutes;
+    const hours = startHour + Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+}
+
+// Set Search Mode Function
+function setSearchMode(mode) {
+    currentSearchMode = mode;
+    const searchInput = document.getElementById('routeSearchInput');
+    const busModeBtn = document.getElementById('busNumberMode');
+    const areaModeBtn = document.getElementById('areaMode');
+    
+    // Update button states
+    busModeBtn.classList.toggle('active', mode === 'bus');
+    areaModeBtn.classList.toggle('active', mode === 'area');
+    
+    // Update placeholder text
+    if (mode === 'bus') {
+        searchInput.placeholder = 'Search routes by bus number...';
+    } else {
+        searchInput.placeholder = 'Search routes by area (e.g., Arumbakkam, Madhavaram)...';
+    }
+    
+    // Clear current search and re-filter
+    searchInput.value = '';
+    filterRoutes();
+    
+    // Show a toast message about the search mode
+    if (mode === 'area') {
+        showToast('Area search available for: Arumbakkam, Madhavaram, Anna Nagar, Tambaram, Velachery, Chrompet, Guindy, Adyar, Mylapore, T.Nagar, Ashok Nagar, Kodambakkam, Nungambakkam, Kilpauk, Perambur', 'info');
+    }
+}
+
+// Debounced Route Search and Filter Function
+function filterRoutes() {
+    // Clear any existing timeout
+    if (searchTimeout) {
+        clearTimeout(searchTimeout);
+    }
+    
+    // Set a new timeout to debounce the search
+    searchTimeout = setTimeout(() => {
+        performFilter();
+    }, 150); // 150ms delay
+}
+
+// Actual filtering logic
+function performFilter() {
+    const searchInput = document.getElementById('routeSearchInput');
+    const rawValue = searchInput.value;
+    const searchTerm = rawValue.toLowerCase().trim();
+    const routeToggles = document.querySelectorAll('.route-toggle');
+    const searchResultsInfo = document.getElementById('searchResultsInfo');
+    const searchResultsCount = document.getElementById('searchResultsCount');
+    
+    console.log(`🔍 filterRoutes called - Mode: ${currentSearchMode}`);
+    console.log(`🔍 Raw input value:`, JSON.stringify(rawValue));
+    console.log(`🔍 Processed search term:`, JSON.stringify(searchTerm));
+    console.log(`🔍 Found ${routeToggles.length} toggles`);
+    
+    // Safety check: if search term is too long or contains console log patterns, clear it
+    if (searchTerm.length > 100 || searchTerm.includes('filterRoutes called') || searchTerm.includes('Toggle')) {
+        console.warn('⚠️ Search term appears corrupted, clearing input');
+        searchInput.value = '';
+        return;
+    }
+    
+    let visibleCount = 0;
+    
+    routeToggles.forEach((toggle, index) => {
+        let isMatch = false;
+        
+        if (currentSearchMode === 'bus') {
+            // Bus number search
+        const routeInfo = toggle.querySelector('.route-info');
+            if (routeInfo) {
+                const busIdText = routeInfo.querySelector('strong').textContent.toLowerCase();
+                
+                // Extract bus number from bus ID (e.g., "Bus 72" -> "72")
+                const busNumberMatch = busIdText.match(/bus\s+(\d+)/i);
+                const busNumber = busNumberMatch ? busNumberMatch[1] : '';
+                
+                // Debug logging
+                if (searchTerm !== '') {
+                    console.log(`Toggle ${index}: Searching "${searchTerm}" in bus "${busIdText}" -> extracted number "${busNumber}"`);
+                }
+                
+                // Only search against the bus number - exact match or starts with
+                isMatch = busNumber === searchTerm || busNumber.startsWith(searchTerm);
+            } else {
+                console.log(`Toggle ${index}: No route-info found`);
+            }
+        } else {
+            // Area search
+            const routeIndex = parseInt(toggle.querySelector('.route-checkbox').dataset.routeIndex);
+            // Try both data sources
+            let route = window.optimizationResults[routeIndex] || AppState.optimizationResults[routeIndex];
+            
+            if (route && route.stops) {
+                // First try text-based search in route names, addresses, and road names
+                const searchableText = route.stops.map(stop => {
+                    const parts = [];
+                    if (stop.route_name) parts.push(stop.route_name.toLowerCase());
+                    if (stop.address) parts.push(stop.address.toLowerCase());
+                    if (stop.original_address) parts.push(stop.original_address.toLowerCase());
+                    return parts.join(' ');
+                }).join(' ');
+                
+                if (searchableText.trim() !== '') {
+                    // Use text-based search if location data is available
+                    isMatch = searchableText.includes(searchTerm);
+                } else {
+                    // Use coordinate-based search for predefined areas
+                    const areaKey = searchTerm.toLowerCase().trim();
+                    if (AREA_COORDINATES[areaKey]) {
+                        const area = AREA_COORDINATES[areaKey];
+                        // Check if any stop in this route is within the area radius
+                        isMatch = route.stops.some(stop => {
+                            const stopLat = parseFloat(stop.snapped_lat || stop.lat);
+                            const stopLng = parseFloat(stop.snapped_lon || stop.lng);
+                            const distance = calculateDistance(area.lat, area.lng, stopLat, stopLng);
+                            return distance <= area.radius;
+                        });
+                        
+                        if (searchTerm !== '' && index < 3) {
+                            console.log(`Toggle ${index}: Coordinate-based area search for "${searchTerm}" in route ${route.busId}: ${isMatch ? 'MATCH' : 'NO MATCH'}`);
+                        }
+                    } else {
+                        isMatch = false;
+                        if (searchTerm !== '' && index === 0) {
+                            console.log(`⚠️ Area "${searchTerm}" not found in predefined areas. Available areas:`, Object.keys(AREA_COORDINATES).join(', '));
+                        }
+                    }
+                }
+                
+                // Debug logging
+                if (searchTerm !== '') {
+                    console.log(`Toggle ${index}: Area search "${searchTerm}" in route ${route.busId}:`, searchableText.substring(0, 100) + '...');
+                }
+            } else {
+                console.log(`Toggle ${index}: No route data found for index ${routeIndex}`);
+            }
+        }
+        
+        if (isMatch || searchTerm === '') {
+            toggle.style.display = 'block';
+            visibleCount++;
+        } else {
+            toggle.style.display = 'none';
+        }
+    });
+    
+    // Update search results info
+    if (searchTerm !== '') {
+        searchResultsInfo.style.display = 'block';
+        searchResultsCount.textContent = visibleCount;
+    } else {
+        searchResultsInfo.style.display = 'none';
+    }
+    
+    // Update select all/deselect all buttons to work with filtered results
+    updateSelectAllButtons();
+}
+
+// Update Select All buttons to work with filtered results
+function updateSelectAllButtons() {
+    const visibleCheckboxes = document.querySelectorAll('.route-checkbox:not([style*="display: none"])');
+    const allVisibleChecked = Array.from(visibleCheckboxes).every(checkbox => checkbox.checked);
+    const someVisibleChecked = Array.from(visibleCheckboxes).some(checkbox => checkbox.checked);
+    
+    // Update button states based on filtered results
+    const selectAllBtn = document.querySelector('.select-all-btn');
+    const deselectAllBtn = document.querySelector('.deselect-all-btn');
+    
+    if (selectAllBtn && deselectAllBtn) {
+        if (allVisibleChecked && visibleCheckboxes.length > 0) {
+            selectAllBtn.style.opacity = '0.6';
+            deselectAllBtn.style.opacity = '1';
+        } else if (someVisibleChecked) {
+            selectAllBtn.style.opacity = '1';
+            deselectAllBtn.style.opacity = '1';
+        } else {
+            selectAllBtn.style.opacity = '1';
+            deselectAllBtn.style.opacity = '0.6';
+        }
+    }
+}
+
+// Clear Route Search Function
+function clearRouteSearch() {
+    const searchInput = document.getElementById('routeSearchInput');
+    const searchResultsInfo = document.getElementById('searchResultsInfo');
+    
+    if (searchInput) {
+        searchInput.value = '';
+        searchInput.focus();
+    }
+    
+    if (searchResultsInfo) {
+        searchResultsInfo.style.display = 'none';
+    }
+    
+    // Clear any pending search timeout
+    if (searchTimeout) {
+        clearTimeout(searchTimeout);
+    }
+    
+    // Show all routes again immediately
+    const routeToggles = document.querySelectorAll('.route-toggle');
+    routeToggles.forEach(toggle => {
+        toggle.style.display = 'block';
+    });
+    
+    // Update select all buttons
+    updateSelectAllButtons();
 }
 
 // Map Control Functions
@@ -4137,6 +4411,11 @@ async function createGeographicalClusters(stops, maxCapacity) {
         cluster.totalDistance = `${Math.min(50, cluster.maxDistance * 1.3).toFixed(1)} km`;
         cluster.routeType = 'geographical-cluster';
         
+        // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+        const routeDistance = Math.min(50, cluster.maxDistance * 1.3);
+        const estimatedTimeMinutes = Math.round((routeDistance / 25) * 60);
+        cluster.estimatedTime = `${estimatedTimeMinutes} min`;
+        
         console.log(`🚌 Route ${index + 1} (${cluster.direction}): ${cluster.stops.length} stops, ${cluster.totalStudents} students (${efficiency}%)`);
     });
     
@@ -4396,6 +4675,10 @@ function finalizeSalvageRoute(route, index) {
     route.maxBearing = bearing + 20;
     route.efficiency = `${((route.totalStudents / 55) * 100).toFixed(1)}%`;
     
+    // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+    const estimatedTimeMinutes = Math.round((route.estimatedDistance / 25) * 60);
+    route.estimatedTime = `${estimatedTimeMinutes} min`;
+    
     // Calculate best route order
     optimizeRouteOrder(route);
 }
@@ -4536,6 +4819,10 @@ function finalizeCorridorRoute(route, index) {
     
     // Set total distance
     route.totalDistance = `${route.estimatedDistance.toFixed(1)} km`;
+    
+    // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+    const estimatedTimeMinutes = Math.round((route.estimatedDistance / 25) * 60);
+    route.estimatedTime = `${estimatedTimeMinutes} min`;
 }
 
 // ✅ INTEGRATED: Create segment-based routes
@@ -4638,6 +4925,10 @@ function finalizeSegmentRoute(route, index, prefix) {
     route.efficiency = `${((route.totalStudents / 55) * 100).toFixed(1)}%`;
     route.totalDistance = `${totalDistance.toFixed(1)} km`;
     route.estimatedDistance = totalDistance;
+    
+    // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+    const estimatedTimeMinutes = Math.round((totalDistance / 25) * 60);
+    route.estimatedTime = `${estimatedTimeMinutes} min`;
 }
 
 function openStreetView() {
@@ -4938,14 +5229,18 @@ function convertAdvancedRoutesToFormat(advancedRoutes, routeIndex) {
         const sectorAngle = route.stops.length > 0 ? route.stops[0].theta : 0;
         const direction = `${Math.round(sectorAngle)}°`;
 
+        // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+        const estimatedTimeMinutes = Math.round((route.dist / 1000 / 25) * 60);
+
         return {
-            busId: `Bus ${routeIndex + index + 1} (Advanced)`,
+            busId: `Bus ${routeIndex + index + 1}`,
             depot: route.depot['Parking Name'] || 'Main Depot',
             stops: formattedStops,
             totalStudents: route.load,
             efficiency: `${((route.load / 55) * 100).toFixed(1)}%`,
             totalDistance: `${(route.dist / 1000).toFixed(1)} km`,
             estimatedDistance: route.dist / 1000,
+            estimatedTime: `${estimatedTimeMinutes} min`,
             direction: direction,
             routeType: 'advanced-angular',
             assignedDepot: route.depot,
@@ -6650,8 +6945,39 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
         let cumulativeDistance = 0;
         let cumulativeStudents = 0;
         
-        // Calculate route metrics with safe parsing
-        const routeDistance = parseFloat(route.totalDistance) || 0;
+        // Get first stop coordinates for distance calculation (not depot)
+        let firstStopLat = 0, firstStopLng = 0;
+        if (route.stops && route.stops.length > 0 && route.stops[0]) {
+            firstStopLat = parseFloat(route.stops[0].snapped_lat || route.stops[0].lat);
+            firstStopLng = parseFloat(route.stops[0].snapped_lon || route.stops[0].lng);
+        }
+        
+        // Calculate route distance from first stop to college through all stops
+        let routeDistance = 0;
+        if (route.stops && route.stops.length > 0) {
+            // Distance from first stop to second stop, second to third, etc.
+            for (let i = 0; i < route.stops.length - 1; i++) {
+                const currentStop = route.stops[i];
+                const nextStop = route.stops[i + 1];
+                if (currentStop && nextStop && 
+                    currentStop.snapped_lat && currentStop.snapped_lon && 
+                    nextStop.snapped_lat && nextStop.snapped_lon) {
+                    routeDistance += calculateHaversineDistance(
+                        parseFloat(currentStop.snapped_lat), parseFloat(currentStop.snapped_lon),
+                        parseFloat(nextStop.snapped_lat), parseFloat(nextStop.snapped_lon)
+                    );
+                }
+            }
+            
+            // Add distance from last stop to college
+            const lastStop = route.stops[route.stops.length - 1];
+            if (lastStop && lastStop.snapped_lat && lastStop.snapped_lon) {
+                routeDistance += calculateHaversineDistance(
+                    parseFloat(lastStop.snapped_lat), parseFloat(lastStop.snapped_lon),
+                    COLLEGE_COORDS[0], COLLEGE_COORDS[1]
+                );
+            }
+        }
         const routeEfficiency = parseFloat(route.efficiency) || 0;
         const hasWarnings = route.hasAccessibilityWarnings || route.warningMessage;
         const routeStudents = parseInt(route.totalStudents) || 0;
@@ -6679,13 +7005,11 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             total_students: routeStudents,
             efficiency_percentage: routeEfficiency.toFixed(2),
             total_distance_km: routeDistance.toFixed(2),
-            estimated_time_min: route.estimatedTime || 'N/A',
+            estimated_time_min: routeDistance > 0 ? `${Math.round((routeDistance / 25) * 60)} min` : 'N/A',
             route_type: route.routeType || 'optimized',
             direction: route.direction || 'MIXED',
             accessibility_status: hasWarnings ? 'Warnings' : 'Valid',
             warnings: route.warningMessage || '',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         };
         
@@ -6704,6 +7028,15 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             
             const studentsAtStop = parseInt(stop.num_students) || 0;
             cumulativeStudents += studentsAtStop;
+            
+            // Calculate distance from first stop to this stop
+            let distanceFromFirstStop = 0;
+            if (firstStopLat && firstStopLng && stop.snapped_lat && stop.snapped_lon) {
+                distanceFromFirstStop = calculateHaversineDistance(
+                    firstStopLat, firstStopLng,
+                    parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon)
+                );
+            }
             
             // Calculate distance to next stop
             let distanceToNext = 0;
@@ -6726,22 +7059,16 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
                 stop_sequence: stopIndex + 1,
                 cluster_number: stop.cluster_number || stopIndex + 1,
                 stop_name: `Stop ${stop.cluster_number || stopIndex + 1}`,
-                stop_address: stop.address || stop.original_address || 'Unknown',
                 original_lat: stop.lat || stop.snapped_lat || 0,
                 original_lon: stop.lng || stop.snapped_lon || 0,
                 snapped_lat: stop.snapped_lat || stop.lat || 0,
                 snapped_lon: stop.snapped_lon || stop.lng || 0,
                 students_pickup: studentsAtStop,
-                road_type: stop.route_type || 'Unknown',
-                road_name: stop.route_name || 'Unknown',
-                snap_distance_meters: stop.snap_distance || 0,
                 distance_to_next_stop_km: distanceToNext.toFixed(3),
                 cumulative_distance_km: cumulativeDistance.toFixed(3),
                 cumulative_students: cumulativeStudents,
-                estimated_pickup_time: stop.estimatedTime || 'N/A',
+                estimated_pickup_time: stop.estimatedTime || calculateStopEstimatedTime(stop, route),
                 accessibility_status: stop.accessibilityStatus || 'Valid',
-                shift_time: shiftTime,
-                day_of_week: dayOfWeek,
                 export_timestamp: timestamp
             };
             
@@ -6755,16 +7082,13 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
                     depot: route.depot || 'Default Depot',
                     stop_sequence: stopIndex + 1,
                     stop_name: `Stop ${stop.cluster_number || stopIndex + 1}`,
-                    stop_address: stop.address || stop.original_address || 'Unknown',
                     students_assigned: studentsAtStop,
                     assignment_type: 'Pickup',
                     bus_capacity: route.maxCapacity || 55,
                     current_load: cumulativeStudents,
                     load_percentage: ((cumulativeStudents / (route.maxCapacity || 55)) * 100).toFixed(1),
-                    distance_from_depot_km: cumulativeDistance.toFixed(3),
-                    estimated_time_from_depot_min: (cumulativeDistance * 2).toFixed(1), // Rough estimate
-                    shift_time: shiftTime,
-                    day_of_week: dayOfWeek,
+                    distance_from_first_stop_km: distanceFromFirstStop.toFixed(3),
+                    estimated_time_from_first_stop_min: (distanceFromFirstStop * 2).toFixed(1), // Rough estimate
                     export_timestamp: timestamp
                 };
                 
@@ -6786,8 +7110,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: window.optimizationResults.length,
             metric_unit: 'routes',
             calculation_method: 'Count',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6795,8 +7117,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalStops,
             metric_unit: 'stops',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6804,8 +7124,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalStudents,
             metric_unit: 'students',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6813,8 +7131,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgEfficiency.toFixed(2),
             metric_unit: '%',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6822,8 +7138,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalDistance.toFixed(2),
             metric_unit: 'km',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6831,8 +7145,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgDistance.toFixed(2),
             metric_unit: 'km',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6840,8 +7152,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgStops.toFixed(1),
             metric_unit: 'stops',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6849,8 +7159,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: routesWithWarnings,
             metric_unit: 'routes',
             calculation_method: 'Count',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6858,8 +7166,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: ((window.optimizationResults.length - routesWithWarnings) / window.optimizationResults.length * 100).toFixed(1),
             metric_unit: '%',
             calculation_method: 'Percentage',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         }
     );
@@ -7127,8 +7433,32 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
         let cumulativeDistance = 0;
         let cumulativeStudents = 0;
         
-        // Calculate route metrics
-        const routeDistance = parseFloat(route.totalDistance) || 0;
+        // Calculate route distance from first stop to college through all stops
+        let routeDistance = 0;
+        if (route.stops && route.stops.length > 0) {
+            // Distance from first stop to second stop, second to third, etc.
+            for (let i = 0; i < route.stops.length - 1; i++) {
+                const currentStop = route.stops[i];
+                const nextStop = route.stops[i + 1];
+                if (currentStop && nextStop && 
+                    currentStop.snapped_lat && currentStop.snapped_lon && 
+                    nextStop.snapped_lat && nextStop.snapped_lon) {
+                    routeDistance += calculateHaversineDistance(
+                        parseFloat(currentStop.snapped_lat), parseFloat(currentStop.snapped_lon),
+                        parseFloat(nextStop.snapped_lat), parseFloat(nextStop.snapped_lon)
+                    );
+                }
+            }
+            
+            // Add distance from last stop to college
+            const lastStop = route.stops[route.stops.length - 1];
+            if (lastStop && lastStop.snapped_lat && lastStop.snapped_lon) {
+                routeDistance += calculateHaversineDistance(
+                    parseFloat(lastStop.snapped_lat), parseFloat(lastStop.snapped_lon),
+                    COLLEGE_COORDS[0], COLLEGE_COORDS[1]
+                );
+            }
+        }
         const routeEfficiency = parseFloat(route.efficiency) || 0;
         const hasWarnings = route.hasAccessibilityWarnings || route.warningMessage;
         
@@ -7147,13 +7477,11 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             total_students: route.totalStudents,
             efficiency_percentage: route.efficiency,
             total_distance_km: routeDistance.toFixed(2),
-            estimated_time_min: route.estimatedTime || 'N/A',
+            estimated_time_min: routeDistance > 0 ? `${Math.round((routeDistance / 25) * 60)} min` : 'N/A',
             route_type: route.routeType || 'optimized',
             direction: route.direction || 'MIXED',
             accessibility_status: hasWarnings ? 'Warnings' : 'Valid',
             warnings: route.warningMessage || '',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         });
         
@@ -7184,14 +7512,9 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
                 snapped_lat: stop.snapped_lat,
                 snapped_lon: stop.snapped_lon,
                 students_pickup: stop.num_students,
-                road_type: stop.route_type || 'Unknown',
-                road_name: stop.route_name || 'Unknown',
-                snap_distance_meters: stop.snap_distance || 0,
                 distance_to_next_stop_km: distanceToNext.toFixed(3),
                 cumulative_distance_km: cumulativeDistance.toFixed(3),
                 cumulative_students: cumulativeStudents,
-                shift_time: shiftTime,
-                day_of_week: dayOfWeek,
                 export_timestamp: timestamp
             });
         }
@@ -7208,8 +7531,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: window.optimizationResults.length,
             metric_unit: 'routes',
             calculation_method: 'Count',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -7217,8 +7538,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalStops,
             metric_unit: 'stops',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -7226,8 +7545,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalStudents,
             metric_unit: 'students',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -7235,8 +7552,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgEfficiency.toFixed(2),
             metric_unit: '%',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -7244,8 +7559,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalDistance.toFixed(2),
             metric_unit: 'km',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -7253,8 +7566,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgDistance.toFixed(2),
             metric_unit: 'km',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -7262,8 +7573,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgStops.toFixed(1),
             metric_unit: 'stops',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -7271,8 +7580,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: routesWithWarnings,
             metric_unit: 'routes',
             calculation_method: 'Count',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -7280,8 +7587,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: ((window.optimizationResults.length - routesWithWarnings) / window.optimizationResults.length * 100).toFixed(1),
             metric_unit: '%',
             calculation_method: 'Percentage',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         }
     );
@@ -7464,6 +7769,48 @@ function debugExcelExport() {
 
 // Make debug function available globally
 window.debugExcelExport = debugExcelExport;
+
+// Function to clear all cached routes
+function clearAllCachedRoutes() {
+    try {
+        // Clear from localStorage
+        const keys = Object.keys(localStorage);
+        keys.forEach(key => {
+            if (key.startsWith('cached_routes_') || key.startsWith('route_cache_')) {
+                localStorage.removeItem(key);
+                console.log(`Cleared cached route: ${key}`);
+            }
+        });
+        
+        // Clear from sessionStorage
+        const sessionKeys = Object.keys(sessionStorage);
+        sessionKeys.forEach(key => {
+            if (key.startsWith('cached_routes_') || key.startsWith('route_cache_')) {
+                sessionStorage.removeItem(key);
+                console.log(`Cleared session route: ${key}`);
+            }
+        });
+        
+        // Clear current optimization results
+        window.optimizationResults = [];
+        AppState.optimizationResults = [];
+        
+        // Refresh the cached routes list
+        if (typeof refreshCachedRoutesList === 'function') {
+            refreshCachedRoutesList();
+        }
+        
+        showToast('All cached routes cleared! Generate fresh routes now.', 'success');
+        console.log('✅ All cached routes cleared successfully');
+        
+    } catch (error) {
+        console.error('Error clearing cached routes:', error);
+        showToast('Error clearing cached routes', 'error');
+    }
+}
+
+// Make function available globally
+window.clearAllCachedRoutes = clearAllCachedRoutes;
 
 // ==================== ROUTE CACHING FUNCTIONALITY ====================
 

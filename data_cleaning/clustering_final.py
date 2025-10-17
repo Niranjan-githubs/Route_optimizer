@@ -876,9 +876,9 @@ class EfficientStudentClusteringSystem:
                 # Assign students to this cluster
                 for student_row, road_distance, walking_distance, walking_layer in valid_students:
                     assignment = {
-                        'user': student_row.get('user', student_row.get('ID', student_row.get('Roll Number', 'Unknown'))),
-                        'email': student_row.get('email', student_row.get('Email', 'N/A')),
-                        'department': student_row.get('department', student_row.get('Department', 'N/A')),
+                        'user': student_row.get('user_roll_no', student_row.get('user', student_row.get('ID', student_row.get('Roll Number', 'Unknown')))),
+                        'email': student_row.get('user_student_id_email', student_row.get('email', student_row.get('Email', 'N/A'))),
+                        'department': student_row.get('user_dept_id_dept_name', student_row.get('department', student_row.get('Department', 'N/A'))),
                         'student_lat': float(student_row['latitude']),
                         'student_lon': float(student_row['longitude']),
                         'cluster_id': cluster_info['cluster_id'],
@@ -915,16 +915,16 @@ class EfficientStudentClusteringSystem:
                     # Handle dict format
                     lat = float(student_row['latitude'])
                     lon = float(student_row['longitude'])
-                    user_id = student_row.get('user', student_row.get('ID', student_row.get('Roll Number', 'Unknown')))
-                    email = student_row.get('email', student_row.get('Email', 'N/A'))
-                    dept = student_row.get('department', student_row.get('Department', 'N/A'))
+                    user_id = student_row.get('user_roll_no', student_row.get('user', student_row.get('ID', student_row.get('Roll Number', 'Unknown'))))
+                    email = student_row.get('user_student_id_email', student_row.get('email', student_row.get('Email', 'N/A')))
+                    dept = student_row.get('user_dept_id_dept_name', student_row.get('department', student_row.get('Department', 'N/A')))
                 else:
                     # Handle pandas Series format
                     lat = float(student_row['latitude'])
                     lon = float(student_row['longitude'])
-                    user_id = student_row.get('user', student_row.get('ID', student_row.get('Roll Number', 'Unknown')))
-                    email = student_row.get('email', student_row.get('Email', 'N/A'))
-                    dept = student_row.get('department', student_row.get('Department', 'N/A'))
+                    user_id = student_row.get('user_roll_no', student_row.get('user', student_row.get('ID', student_row.get('Roll Number', 'Unknown'))))
+                    email = student_row.get('user_student_id_email', student_row.get('email', student_row.get('Email', 'N/A')))
+                    dept = student_row.get('user_dept_id_dept_name', student_row.get('department', student_row.get('Department', 'N/A')))
                 
                 outlier_assignment = {
                     'user': user_id,
@@ -1579,4 +1579,4 @@ if __name__ == "__main__":
     #main()
     
     # Uncomment below to process a single file instead:
-    process_single_file("cleaned_oct2.csv")
+    process_single_file("oct2/cleaned_oct2.csv")

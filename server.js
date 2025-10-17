@@ -330,6 +330,170 @@ app.delete('/api/cached-routes/:name', (req, res) => {
 
 // ==================== END ROUTE CACHING ENDPOINTS ====================
 
+// ==================== VEHICLE ROUTES ENDPOINTS ====================
+
+// Serve vehicle routes data in chunks
+app.get('/api/vehicle-routes', (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 50;
+        const offset = parseInt(req.query.offset) || 0;
+        
+        console.log(`📋 Loading vehicle routes: limit=${limit}, offset=${offset}`);
+        
+        // Read the vehicle routes file
+        const vehicleRoutesPath = path.join(__dirname, 'data_cleaning', 'vehicle_routes.json');
+        
+        if (!fs.existsSync(vehicleRoutesPath)) {
+            return res.status(404).json({ error: 'Vehicle routes file not found' });
+        }
+        
+        // Read and parse the JSON file
+        const rawData = fs.readFileSync(vehicleRoutesPath, 'utf8');
+        const data = JSON.parse(rawData);
+        
+        if (!data.highways || !Array.isArray(data.highways)) {
+            return res.status(400).json({ error: 'Invalid vehicle routes format' });
+        }
+        
+        // Get the requested chunk
+        const routes = data.highways.slice(offset, offset + limit);
+        
+        // Calculate route statistics and filter valid routes
+        const routeStats = routes.map((route, index) => {
+            const coordinates = route.coordinates || [];
+            
+            // Filter out invalid coordinates
+            const validCoords = coordinates.filter(coord => 
+                coord && 
+                Array.isArray(coord) && 
+                coord.length >= 2 && 
+                typeof coord[0] === 'number' && 
+                typeof coord[1] === 'number' &&
+                !isNaN(coord[0]) && 
+                !isNaN(coord[1]) &&
+                coord[0] >= -180 && coord[0] <= 180 &&
+                coord[1] >= -90 && coord[1] <= 90
+            );
+            
+            const distance = calculateRouteDistance(validCoords);
+            
+            return {
+                id: offset + index,
+                name: route.name || `Route ${offset + index + 1}`,
+                coordinates: validCoords,
+                distance: distance,
+                pointCount: validCoords.length,
+                originalPointCount: coordinates.length,
+                color: getRouteColor(offset + index),
+                isValid: validCoords.length >= 2
+            };
+        }).filter(route => route.isValid); // Only return valid routes
+        
+        const response = {
+            routes: routeStats,
+            total: data.highways.length,
+            hasMore: offset + limit < data.highways.length,
+            offset: offset,
+            limit: limit
+        };
+        
+        console.log(`✅ Served ${routes.length} routes (${offset + 1}-${offset + routes.length} of ${data.highways.length})`);
+        res.json(response);
+        
+    } catch (error) {
+        console.error('❌ Error loading vehicle routes:', error);
+        res.status(500).json({ error: 'Failed to load vehicle routes', details: error.message });
+    }
+});
+
+// Get vehicle routes summary/statistics
+app.get('/api/vehicle-routes/summary', (req, res) => {
+    try {
+        console.log('📊 Loading vehicle routes summary...');
+        
+        const vehicleRoutesPath = path.join(__dirname, 'data_cleaning', 'vehicle_routes.json');
+        
+        if (!fs.existsSync(vehicleRoutesPath)) {
+            return res.status(404).json({ error: 'Vehicle routes file not found' });
+        }
+        
+        // Read and parse the JSON file
+        const rawData = fs.readFileSync(vehicleRoutesPath, 'utf8');
+        const data = JSON.parse(rawData);
+        
+        if (!data.highways || !Array.isArray(data.highways)) {
+            return res.status(400).json({ error: 'Invalid vehicle routes format' });
+        }
+        
+        const totalRoutes = data.highways.length;
+        let totalDistance = 0;
+        let totalPoints = 0;
+        let minDistance = Infinity;
+        let maxDistance = 0;
+        
+        // Calculate summary statistics
+        data.highways.forEach((route, index) => {
+            const coordinates = route.coordinates || [];
+            const distance = calculateRouteDistance(coordinates);
+            
+            totalDistance += distance;
+            totalPoints += coordinates.length;
+            minDistance = Math.min(minDistance, distance);
+            maxDistance = Math.max(maxDistance, distance);
+        });
+        
+        const summary = {
+            totalRoutes: totalRoutes,
+            totalDistance: totalDistance,
+            averageDistance: totalRoutes > 0 ? totalDistance / totalRoutes : 0,
+            minDistance: minDistance === Infinity ? 0 : minDistance,
+            maxDistance: maxDistance,
+            totalPoints: totalPoints,
+            averagePointsPerRoute: totalRoutes > 0 ? totalPoints / totalRoutes : 0
+        };
+        
+        console.log(`📊 Vehicle routes summary: ${totalRoutes} routes, ${totalDistance.toFixed(1)}km total`);
+        res.json(summary);
+        
+    } catch (error) {
+        console.error('❌ Error loading vehicle routes summary:', error);
+        res.status(500).json({ error: 'Failed to load vehicle routes summary', details: error.message });
+    }
+});
+
+// Helper function to calculate route distance (simplified)
+function calculateRouteDistance(coordinates) {
+    if (!coordinates || coordinates.length < 2) return 0;
+    
+    let totalDistance = 0;
+    for (let i = 1; i < coordinates.length; i++) {
+        const [lat1, lng1] = coordinates[i - 1];
+        const [lat2, lng2] = coordinates[i];
+        
+        // Simple distance calculation (not perfectly accurate but fast)
+        const distance = Math.sqrt(
+            Math.pow(lat2 - lat1, 2) + Math.pow(lng2 - lng1, 2)
+        ) * 111; // Rough conversion to km
+        
+        totalDistance += distance;
+    }
+    
+    return totalDistance;
+}
+
+// Helper function to get route color
+function getRouteColor(index) {
+    const colors = [
+        '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
+        '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B739', '#52B788',
+        '#E74C3C', '#3498DB', '#2ECC71', '#F39C12', '#9B59B6',
+        '#1ABC9C', '#34495E', '#E67E22', '#95A5A6', '#F1C40F'
+    ];
+    return colors[index % colors.length];
+}
+
+// ==================== END VEHICLE ROUTES ENDPOINTS ====================
+
 // Error handling middleware
 app.use((error, req, res, next) => {
     console.error('Server error:', error);
