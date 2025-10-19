@@ -1,9 +1,20 @@
 {
+  "name": "smart-bus-route-optimizer",
+  "version": "1.0.0",
+  "description": "A smart bus route optimization system with Google Maps integration",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
     "google-auth-library": "^10.2.1",
     "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=16.0.0"
   }
 }
