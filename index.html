@@ -5,6 +5,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🚌 Smart Bus Route Optimizer</title>
     
+    <!-- Initialize Google Maps callback -->
+    <script>
+        // Global initMap function for Google Maps callback
+        window.initMap = function() {
+            console.log('🚀 Google Maps API loaded via callback. Initializing Smart Bus Route Optimizer...');
+            // Clear any waiting intervals
+            if (window.waitForGoogleMaps) {
+                clearInterval(window.waitForGoogleMaps);
+            }
+            // Small delay to ensure DOM is ready
+            setTimeout(() => {
+                if (document.readyState === 'complete') {
+                    if (typeof initializeApp === 'function') {
+                        initializeApp();
+                    }
+                } else {
+                    document.addEventListener('DOMContentLoaded', function() {
+                        if (typeof initializeApp === 'function') {
+                            initializeApp();
+                        }
+                    });
+                }
+            }, 100);
+        };
+    </script>
+    
          <!-- Google Maps API -->
      <script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAiVn2TbI7qSuTzw1EKvY4urq7V5aTZkZg&libraries=geometry,places&callback=initMap"></script>
     
@@ -88,6 +114,31 @@
                 <button class="close-route-selector" onclick="toggleRouteSelector()">
                     <i class="fas fa-times"></i>
                 </button>
+            </div>
+            
+            <!-- Route Search -->
+            <div class="route-search-container">
+                <!-- Search Mode Toggle -->
+                <div class="search-mode-toggle">
+                    <button class="search-mode-btn active" id="busNumberMode" onclick="setSearchMode('bus')">
+                        <i class="fas fa-bus"></i> Bus Number
+                    </button>
+                    <button class="search-mode-btn" id="areaMode" onclick="setSearchMode('area')">
+                        <i class="fas fa-map-marker-alt"></i> Area
+                    </button>
+                </div>
+                
+                <div class="search-input-wrapper">
+                    <input type="text" id="routeSearchInput" placeholder="Search routes by bus number..." 
+                           oninput="filterRoutes()">
+                    <i class="fas fa-search search-icon"></i>
+                    <button class="clear-search-btn" onclick="clearRouteSearch()" title="Clear search">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="search-results-info" id="searchResultsInfo" style="display: none;">
+                    <span id="searchResultsCount">0</span> routes found
+                </div>
             </div>
             
                          <!-- Quick Filters -->
@@ -238,6 +289,10 @@
                         <i class="fas fa-map"></i> Show Data
                     </button>
                     
+                    <button class="btn btn-secondary btn-full" onclick="visualizeRouteNetwork()">
+                        <i class="fas fa-route"></i> Route Network
+                    </button>
+                    
                     <button class="btn btn-warning btn-full" onclick="exportResults()" id="exportBtn" disabled>
                         <i class="fas fa-download"></i> Export Basic
                     </button>
@@ -252,6 +307,36 @@
                     
                     <button class="btn btn-warning btn-full" onclick="debugExcelExport()" style="background: #f59e0b; color: white;">
                         <i class="fas fa-bug"></i> Debug Excel Export
+                    </button>
+                </div>
+            </div>
+
+            <!-- Cached Routes Section -->
+            <div class="sidebar-section">
+                <h4><i class="fas fa-archive"></i> Cached Routes</h4>
+                <div class="form-group" style="margin-bottom: 1rem;">
+                    <label for="cachedRoutesSelect" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">
+                        <i class="fas fa-history"></i> Load Saved Routes:
+                    </label>
+                    <select id="cachedRoutesSelect" class="input-control" onchange="loadCachedRoutes(this.value)" style="width: 100%; padding: 0.5rem; margin-bottom: 0.5rem;">
+                        <option value="">Select cached routes...</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom: 1rem;">
+                    <label for="routeNameInput" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">
+                        <i class="fas fa-tag"></i> Save Current Routes As:
+                    </label>
+                    <input type="text" id="routeNameInput" class="input-control" placeholder="Enter route name..." style="width: 100%; padding: 0.5rem; margin-bottom: 0.5rem;">
+                </div>
+                <div class="action-buttons">
+                    <button onclick="saveCurrentRoutesWithName()" class="btn btn-primary btn-full" id="saveRoutesBtn" disabled>
+                        <i class="fas fa-save"></i> Save Routes
+                    </button>
+                    <button onclick="refreshCachedRoutesList()" class="btn btn-secondary btn-full">
+                        <i class="fas fa-sync-alt"></i> Refresh List
+                    </button>
+                    <button onclick="clearAllCachedRoutes()" class="btn btn-warning btn-full" style="background: #f59e0b; color: white;">
+                        <i class="fas fa-trash-alt"></i> Clear All Cached Routes
                     </button>
                 </div>
             </div>
@@ -324,6 +409,9 @@
      </div>
 
     <!-- Scripts -->
+    <script src="js/utils/routeCache.js"></script>
+    <script src="js/optimization/googleAPI.js"></script>
+    <script src="js/visualization/routeNetworkVisualizer.js"></script>
     <script src="js/modern-app.js"></script>
 </body>
 </html>

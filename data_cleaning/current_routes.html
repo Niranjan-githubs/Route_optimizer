@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vehicle Routes Visualizer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 320px;
+            background: white;
+            box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+            overflow-y: auto;
+            z-index: 1000;
+        }
+
+        .sidebar-content {
+            padding: 24px;
+        }
+
+        h1 {
+            font-size: 24px;
+            color: #1f2937;
+            margin-bottom: 24px;
+        }
+
+        .api-key-section {
+            background: #eff6ff;
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 24px;
+        }
+
+        .api-key-section label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+
+        .api-key-section input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+
+        .api-key-section input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .btn {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 500;
+        }
+
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+            width: 100%;
+        }
+
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+
+        .btn-primary:disabled {
+            background: #93c5fd;
+            cursor: not-allowed;
+        }
+
+        .upload-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-bottom: 24px;
+        }
+
+        .upload-btn input {
+            display: none;
+        }
+
+        .alert {
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+
+        .alert-error {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+
+        .alert-info {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .routes-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .routes-header h2 {
+            font-size: 18px;
+            color: #374151;
+        }
+
+        .btn-secondary {
+            background: #e5e7eb;
+            color: #374151;
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+
+        .btn-secondary:hover {
+            background: #d1d5db;
+        }
+
+        .route-item {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            background: #f9fafb;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .route-item:hover {
+            background: #f3f4f6;
+        }
+
+        .route-item.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .route-checkbox {
+            width: 16px;
+            height: 16px;
+            margin-right: 12px;
+            cursor: pointer;
+        }
+
+        .route-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            margin-right: 12px;
+        }
+
+        .route-info {
+            flex: 1;
+        }
+
+        .route-name {
+            font-weight: 500;
+            color: #1f2937;
+            margin-bottom: 2px;
+        }
+
+        .route-details {
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: #6b7280;
+            margin-top: 32px;
+        }
+
+        .map-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+
+        .map-placeholder {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #e5e7eb;
+            color: #6b7280;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sidebar-content">
+            <h1>🚌 Bus Route Analyzer</h1>
+            
+            <div id="apiKeySection" class="api-key-section">
+                <label>🔑 Google Maps API Key</label>
+                <input type="text" id="apiKeyInput" placeholder="Enter your API key">
+                <button class="btn btn-primary" onclick="loadMap()">Load Map</button>
+            </div>
+
+            <label class="btn btn-primary upload-btn hidden" id="uploadSection">
+                📤 Upload JSON
+                <input type="file" id="fileInput" accept=".json">
+            </label>
+            
+            <button class="btn btn-secondary hidden" id="serverLoadBtn" onclick="loadRoutesFromServer()">
+                🖥️ Load from Server
+            </button>
+
+            <div id="errorAlert" class="alert alert-error hidden"></div>
+            <div id="loadingAlert" class="alert alert-info hidden">Loading routes...</div>
+
+            <div id="routesSection" class="hidden">
+                <div class="routes-header">
+                    <h2 id="routesCount">Routes (0/0)</h2>
+                    <button class="btn btn-secondary" onclick="toggleAll()">Select All</button>
+                </div>
+                <div id="routesList"></div>
+            </div>
+
+            <div id="emptyState" class="empty-state hidden">
+                <p style="margin-bottom: 8px;">No routes loaded</p>
+                <p style="font-size: 14px;">Upload a JSON file to begin</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="map-container">
+        <div id="map"></div>
+        <div id="mapPlaceholder" class="map-placeholder">
+            <div style="font-size: 48px;">🔑</div>
+            <p style="font-size: 18px;">Enter your Google Maps API key to start</p>
+        </div>
+    </div>
+
+    <script>
+        // PUT YOUR GOOGLE MAPS API KEY HERE
+        const GOOGLE_MAPS_API_KEY = 'AIzaSyAiVn2TbI7qSuTzw1EKvY4urq7V5aTZkZg';
+
+        const colors = [
+            '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
+            '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B739', '#52B788'
+        ];
+
+        let map;
+        let directionsService;
+        let directionsRenderers = {};
+        let routePolylines = {};
+        let routes = [];
+        let selectedRoutes = new Set();
+        let loading = false;
+
+        // Auto-load map on page load
+        window.onload = function() {
+            if (GOOGLE_MAPS_API_KEY === 'AIzaSyAiVn2TbI7qSuTzw1EKvY4urq7V5aTZkZg') {
+                showError('Please set your Google Maps API key in the script');
+                return;
+            }
+            loadMap();
+        };
+
+        function loadMap() {
+            const script = document.createElement('script');
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=places`;
+            script.async = true;
+            script.defer = true;
+            script.onload = initMap;
+            script.onerror = () => showError('Failed to load Google Maps. Check your API key.');
+            document.head.appendChild(script);
+        }
+
+        function initMap() {
+            map = new google.maps.Map(document.getElementById('map'), {
+                center: { lat: 20, lng: 0 },
+                zoom: 2,
+                mapTypeControl: true,
+                streetViewControl: true,
+                fullscreenControl: true
+            });
+
+            directionsService = new google.maps.DirectionsService();
+            
+            document.getElementById('apiKeySection').classList.add('hidden');
+            document.getElementById('mapPlaceholder').classList.add('hidden');
+            // Hide file upload since we auto-load from server
+            // document.getElementById('uploadSection').classList.remove('hidden');
+            document.getElementById('serverLoadBtn').classList.remove('hidden');
+            document.getElementById('emptyState').classList.remove('hidden');
+            
+            document.getElementById('fileInput').addEventListener('change', handleFileUpload);
+            
+            // Auto-load routes from server after map is ready
+            setTimeout(() => {
+                loadRoutesFromServer();
+            }, 1000);
+        }
+
+        // Load routes from server instead of file upload
+        async function loadRoutesFromServer() {
+            try {
+                showLoading(true);
+                hideError();
+                
+                console.log('📋 Loading routes from server...');
+                
+                // First get summary
+                const summaryResponse = await fetch('http://localhost:3000/api/vehicle-routes/summary');
+                if (!summaryResponse.ok) {
+                    throw new Error(`Server error: ${summaryResponse.status}`);
+                }
+                
+                const summary = await summaryResponse.json();
+                console.log('📊 Route summary:', summary);
+                
+                // Load first batch of routes
+                const routesResponse = await fetch('http://localhost:3000/api/vehicle-routes?limit=50&offset=0');
+                if (!routesResponse.ok) {
+                    throw new Error(`Server error: ${routesResponse.status}`);
+                }
+                
+                const data = await routesResponse.json();
+                console.log('📋 Loaded routes:', data);
+                
+                routes = data.routes.map(route => ({
+                    id: route.id,
+                    name: route.name,
+                    coordinates: route.coordinates,
+                    color: route.color,
+                    distance: route.distance,
+                    pointCount: route.pointCount
+                }));
+
+                selectedRoutes = new Set(routes.map(r => r.id));
+                
+                // Update UI with summary info
+                document.getElementById('routesCount').textContent = 
+                    `Routes (${routes.length}/${summary.totalRoutes}) - ${summary.totalDistance.toFixed(1)}km total`;
+                
+                hideError();
+                renderRoutesList();
+                drawRoutes();
+                
+                // Show summary info
+                showToast(`Loaded ${routes.length} routes. Total: ${summary.totalRoutes} routes, ${summary.totalDistance.toFixed(1)}km`, 'success');
+                
+            } catch (err) {
+                console.error('Error loading routes:', err);
+                showError('Error loading routes from server: ' + err.message);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const json = JSON.parse(e.target.result);
+                    
+                    if (!json.highways || !Array.isArray(json.highways)) {
+                        showError('Invalid JSON format. Expected { "highways": [...] }');
+                        return;
+                    }
+
+                    // Limit to first 50 routes for performance
+                    const limitedHighways = json.highways.slice(0, 50);
+                    
+                    routes = limitedHighways.map((highway, idx) => ({
+                        id: idx,
+                        name: highway.name || `Route ${idx + 1}`,
+                        coordinates: highway.coordinates || [],
+                        color: colors[idx % colors.length]
+                    }));
+
+                    selectedRoutes = new Set(routes.map(r => r.id));
+                    hideError();
+                    renderRoutesList();
+                    drawRoutes();
+                    
+                    if (json.highways.length > 50) {
+                        showError(`Loaded first 50 routes out of ${json.highways.length} total routes for performance.`);
+                    }
+                } catch (err) {
+                    console.error('JSON parsing error:', err);
+                    showError('Error parsing JSON file: ' + err.message + '. File might be too large or corrupted.');
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function renderRoutesList() {
+            const routesList = document.getElementById('routesList');
+            routesList.innerHTML = '';
+            
+            routes.forEach(route => {
+                const item = document.createElement('div');
+                item.className = 'route-item';
+                if (loading) item.classList.add('disabled');
+                
+                item.innerHTML = `
+                    <input type="checkbox" class="route-checkbox" ${selectedRoutes.has(route.id) ? 'checked' : ''}>
+                    <div class="route-color" style="background-color: ${route.color}"></div>
+                    <div class="route-info">
+                        <div class="route-name">${route.name}</div>
+                        <div class="route-details">
+                            ${route.coordinates.length} waypoints
+                            ${route.distance ? ` • ${route.distance.toFixed(1)}km` : ''}
+                        </div>
+                    </div>
+                `;
+                
+                if (!loading) {
+                    item.onclick = () => toggleRoute(route.id);
+                }
+                
+                routesList.appendChild(item);
+            });
+            
+            document.getElementById('routesSection').classList.remove('hidden');
+            document.getElementById('emptyState').classList.add('hidden');
+            updateRoutesCount();
+        }
+
+        function updateRoutesCount() {
+            document.getElementById('routesCount').textContent = 
+                `Routes (${selectedRoutes.size}/${routes.length})`;
+        }
+
+        function toggleRoute(routeId) {
+            if (loading) return;
+            
+            if (selectedRoutes.has(routeId)) {
+                selectedRoutes.delete(routeId);
+            } else {
+                selectedRoutes.add(routeId);
+            }
+            
+            renderRoutesList();
+            drawRoutes();
+        }
+
+        function toggleAll() {
+            if (loading) return;
+            
+            if (selectedRoutes.size === routes.length) {
+                selectedRoutes.clear();
+            } else {
+                selectedRoutes = new Set(routes.map(r => r.id));
+            }
+            
+            renderRoutesList();
+            drawRoutes();
+        }
+
+        async function drawRoutes() {
+            if (!map || !directionsService) return;
+
+            // Clear existing renderers
+            Object.values(directionsRenderers).forEach(renderer => {
+                renderer.setMap(null);
+            });
+            directionsRenderers = {};
+
+            if (selectedRoutes.size === 0) return;
+
+            loading = true;
+            document.getElementById('loadingAlert').classList.remove('hidden');
+            renderRoutesList();
+
+            const bounds = new google.maps.LatLngBounds();
+
+            for (const route of routes) {
+                if (!selectedRoutes.has(route.id) || route.coordinates.length < 2) continue;
+
+                try {
+                    const coords = route.coordinates;
+                    
+                    // Validate coordinates
+                    if (!coords || coords.length === 0) {
+                        console.warn(`Skipping route ${route.name}: No coordinates`);
+                        continue;
+                    }
+                    
+                    // Check if coordinates are valid
+                    const validCoords = coords.filter(coord => 
+                        coord && 
+                        Array.isArray(coord) && 
+                        coord.length >= 2 && 
+                        typeof coord[0] === 'number' && 
+                        typeof coord[1] === 'number' &&
+                        !isNaN(coord[0]) && 
+                        !isNaN(coord[1]) &&
+                        coord[0] >= -180 && coord[0] <= 180 &&
+                        coord[1] >= -90 && coord[1] <= 90
+                    );
+                    
+                    if (validCoords.length < 2) {
+                        console.warn(`Skipping route ${route.name}: Invalid coordinates (${validCoords.length} valid out of ${coords.length})`);
+                        continue;
+                    }
+                    
+                    const origin = { lat: validCoords[0][1], lng: validCoords[0][0] };
+                    const destination = { lat: validCoords[validCoords.length - 1][1], lng: validCoords[validCoords.length - 1][0] };
+                    
+                    const waypoints = validCoords.slice(1, -1).slice(0, 23).map(coord => ({
+                        location: { lat: coord[1], lng: coord[0] },
+                        stopover: false
+                    }));
+
+                    const request = {
+                        origin,
+                        destination,
+                        waypoints,
+                        travelMode: google.maps.TravelMode.DRIVING,
+                        optimizeWaypoints: false
+                    };
+
+                    const result = await new Promise((resolve, reject) => {
+                        directionsService.route(request, (result, status) => {
+                            if (status === 'OK') resolve(result);
+                            else reject(status);
+                        });
+                    });
+
+                    const renderer = new google.maps.DirectionsRenderer({
+                        map: map,
+                        directions: result,
+                        suppressMarkers: false,
+                        polylineOptions: {
+                            strokeColor: route.color,
+                            strokeWeight: 5,
+                            strokeOpacity: 0.7
+                        }
+                    });
+
+                    directionsRenderers[route.id] = renderer;
+
+                    result.routes[0].legs.forEach(leg => {
+                        bounds.extend(leg.start_location);
+                        bounds.extend(leg.end_location);
+                    });
+
+                    google.maps.event.addListener(renderer, 'click', () => {
+                        const infoWindow = new google.maps.InfoWindow({
+                            content: `<div style="padding: 8px;"><b>${route.name}</b><br>${route.coordinates.length} waypoints</div>`
+                        });
+                        infoWindow.setPosition(result.routes[0].legs[0].start_location);
+                        infoWindow.open(map);
+                    });
+
+                } catch (err) {
+                    if (err === 'ZERO_RESULTS') {
+                        console.warn(`Skipping route ${route.name}: No valid route found (ZERO_RESULTS)`);
+                    } else if (err === 'OVER_QUERY_LIMIT') {
+                        console.warn(`Skipping route ${route.name}: API quota exceeded`);
+                    } else {
+                        console.warn(`Skipping route ${route.name}: ${err}`);
+                    }
+                }
+            }
+
+            if (!bounds.isEmpty()) {
+                map.fitBounds(bounds);
+            }
+
+            loading = false;
+            document.getElementById('loadingAlert').classList.add('hidden');
+            renderRoutesList();
+        }
+
+        function showError(message) {
+            const errorAlert = document.getElementById('errorAlert');
+            errorAlert.textContent = message;
+            errorAlert.classList.remove('hidden');
+        }
+
+        function hideError() {
+            document.getElementById('errorAlert').classList.add('hidden');
+        }
+
+        function showToast(message, type = 'info') {
+            // Create toast element
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.textContent = message;
+            toast.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: ${type === 'success' ? '#4CAF50' : type === 'error' ? '#f44336' : '#2196F3'};
+                color: white;
+                padding: 12px 20px;
+                border-radius: 4px;
+                z-index: 10000;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+                font-size: 14px;
+                max-width: 300px;
+            `;
+            
+            document.body.appendChild(toast);
+            
+            // Remove after 3 seconds
+            setTimeout(() => {
+                if (toast.parentNode) {
+                    toast.parentNode.removeChild(toast);
+                }
+            }, 3000);
+        }
+
+        function showLoading(show) {
+            const loadingAlert = document.getElementById('loadingAlert');
+            if (loadingAlert) {
+                if (show) {
+                    loadingAlert.classList.remove('hidden');
+                } else {
+                    loadingAlert.classList.add('hidden');
+                }
+            }
+        }
+
+        function showError(message) {
+            const errorAlert = document.getElementById('errorAlert');
+            if (errorAlert) {
+                errorAlert.textContent = message;
+                errorAlert.classList.remove('hidden');
+            }
+        }
+
+        function hideError() {
+            const errorAlert = document.getElementById('errorAlert');
+            if (errorAlert) {
+                errorAlert.classList.add('hidden');
+            }
+        }
+    </script>
+</body>
+</html>

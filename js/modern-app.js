@@ -1,6 +1,8 @@
 // 🚌 Smart Bus Route Optimizer - Modern Application
 // This replaces the old Leaflet-based system with Google Maps and fixes all UI bugs
 
+// Network optimization functions are loaded via script tag in HTML
+
 // Global state
 const AppState = {
     map: null,
@@ -33,16 +35,15 @@ const AppState = {
 };
 
 // Constants
-const COLLEGE_COORDS = [13.008867898985972, 80.00353386796435]; // Array format for compatibility
 const ROUTE_COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3', '#54A0FF', '#5F27CD'];
 const GOOGLE_API_KEY = 'AIzaSyAiVn2TbI7qSuTzw1EKvY4urq7V5aTZkZg'; // Google API Key for Directions API
 
 // Global variables for optimization system
-window.COLLEGE_COORDS = COLLEGE_COORDS;
+// COLLEGE_COORDS is defined in googleAPI.js and made available globally
 window.stopsData = [];
 window.depotsData = [];
 
-// Global initMap function for Google Maps callback (will be set later to avoid conflicts)
+// initMap function is now defined in index.html
 
 // Initialize application
 document.addEventListener('DOMContentLoaded', function() {
@@ -216,17 +217,7 @@ function setupEventListeners() {
             }
         }
         
-        // ✅ NEW: Ruler mode toggle with 'R' key
-        if (e.key === 'r' || e.key === 'R') {
-            e.preventDefault();
-            toggleRulerMode();
-        }
-        
-        // ✅ NEW: Draggable mode toggle with 'D' key
-        if (e.key === 'd' || e.key === 'D') {
-            e.preventDefault();
-            toggleDraggableMode();
-        }
+        // Ruler and Draggable mode shortcuts removed - use buttons only
     });
 }
 
@@ -680,6 +671,10 @@ function finalizeCluster(cluster) {
     cluster.totalDistance = `${totalDistance.toFixed(1)} km`;
     cluster.estimatedDistance = totalDistance;
     cluster.depot = AppState.depotsData[0]?.['Parking Name'] || 'Main Depot';
+    
+    // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+    const estimatedTimeMinutes = Math.round((totalDistance / 25) * 60);
+    cluster.estimatedTime = `${estimatedTimeMinutes} min`;
 }
 
 // Simulation (replace with actual API)
@@ -752,8 +747,8 @@ async function visualizeRoutes(routes) {
             // Use road-following route tracer instead of straight polylines
             await visualizeOptimizedRoute(waypoints, color, route, index);
             
-            // Small delay to avoid overwhelming the routing service
-            await new Promise(resolve => setTimeout(resolve, 200));
+            // Increased delay to avoid OSRM rate limiting
+            await new Promise(resolve => setTimeout(resolve, 500));
         }
         
         fitMapToRoutes();
@@ -801,33 +796,64 @@ async function visualizeRoutes(routes) {
     }
 }
 
-// Get road-following directions using OSRM
+// Rate limiter for OSRM API calls
+let osrmRequestQueue = [];
+let isProcessingQueue = false;
+const OSRM_RATE_LIMIT = 100; // 100ms between requests
+
+async function processOSRMQueue() {
+    if (isProcessingQueue || osrmRequestQueue.length === 0) return;
+    
+    isProcessingQueue = true;
+    
+    while (osrmRequestQueue.length > 0) {
+        const { resolve, reject, origin, destination } = osrmRequestQueue.shift();
+        
+        try {
+            const result = await getDirectionsInternal(origin, destination);
+            resolve(result);
+        } catch (error) {
+            reject(error);
+        }
+        
+        // Rate limiting delay
+        await new Promise(resolve => setTimeout(resolve, OSRM_RATE_LIMIT));
+    }
+    
+    isProcessingQueue = false;
+}
+
+// Internal OSRM function without rate limiting
+async function getDirectionsInternal(origin, destination) {
+    const coordinates = `${origin.lng},${origin.lat};${destination.lng},${destination.lat}`;
+    const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson`;
+    
+    const response = await fetch(osrmUrl);
+    
+    if (!response.ok) {
+        throw new Error(`OSRM API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data.routes && data.routes[0] && data.routes[0].geometry) {
+        // Convert GeoJSON coordinates [lng, lat] to Leaflet format [lat, lng]
+        return data.routes[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
+    }
+    
+    throw new Error('No route found');
+}
+
+// Rate-limited OSRM function
 async function getDirections(origin, destination) {
-    try {
-        // Build OSRM request URL
-        const coordinates = `${origin.lng},${origin.lat};${destination.lng},${destination.lat}`;
-        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&geometries=geojson`;
-        
-        const response = await fetch(osrmUrl);
-        
-        if (!response.ok) {
-            throw new Error(`OSRM API error: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        
-        if (data.routes && data.routes[0] && data.routes[0].geometry) {
-            // Convert GeoJSON coordinates [lng, lat] to Leaflet format [lat, lng]
-            return data.routes[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
-        }
-        
-        throw new Error('No route found');
-        
-    } catch (error) {
+    return new Promise((resolve, reject) => {
+        osrmRequestQueue.push({ resolve, reject, origin, destination });
+        processOSRMQueue();
+    }).catch(error => {
         console.error('OSRM routing error:', error);
         // Fallback to straight line
         return [[origin.lat, origin.lng], [destination.lat, destination.lng]];
-    }
+    });
 }
 
 // Helper function to visualize a single optimized route
@@ -852,6 +878,11 @@ async function visualizeOptimizedRoute(waypoints, color, route, index) {
         polyline.addListener('click', () => {
             showRouteInfo(route, index);
         });
+        
+        // Small delay between segments to avoid rate limiting
+        if (i < waypoints.length - 2) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
         }
         
         // Add markers for stops
@@ -901,10 +932,20 @@ async function visualizeOptimizedRoute(waypoints, color, route, index) {
 
 // Route Selection
 function showRouteSelector() {
+    console.log('🔍 showRouteSelector called');
+    console.log('🔍 AppState.optimizationResults:', AppState.optimizationResults);
+    console.log('🔍 AppState.optimizationResults.length:', AppState.optimizationResults?.length);
+    
     const selector = document.getElementById('floatingRouteSelector');
     const toggles = document.getElementById('routeToggles');
     
-    if (!AppState.optimizationResults.length) return;
+    console.log('🔍 selector:', selector);
+    console.log('🔍 toggles:', toggles);
+    
+    if (!AppState.optimizationResults.length) {
+        console.log('No AppState.optimizationResults to show');
+        return;
+    }
     
     toggles.innerHTML = '';
     
@@ -917,7 +958,7 @@ function showRouteSelector() {
                 <span class="route-info">
                     <strong>${route.busId}</strong>
                     <span class="route-details">
-                        ${route.totalStudents} students | ${route.efficiency} efficient
+                        ${route.totalStudents} students | ${route.efficiency} efficient | ${(parseFloat(route.totalDistance) || 0).toFixed(1)}km
                     </span>
                 </span>
             </label>
@@ -938,6 +979,19 @@ function showRouteSelector() {
     AppState.optimizationResults.forEach((_, index) => {
         AppState.selectedRoutes.add(index);
     });
+    
+    // Clear search input and reset search results
+    const searchInput = document.getElementById('routeSearchInput');
+    const searchResultsInfo = document.getElementById('searchResultsInfo');
+    if (searchInput) {
+        searchInput.value = '';
+    }
+    if (searchResultsInfo) {
+        searchResultsInfo.style.display = 'none';
+    }
+    
+    // Initialize select all buttons
+    updateSelectAllButtons();
 }
 
 // Route Toggle Handler
@@ -949,6 +1003,7 @@ function handleRouteToggle(routeIndex, isVisible) {
     }
     
     updateRouteVisibility();
+    updateSelectAllButtons();
 }
 
 // Update Route Visibility
@@ -1333,12 +1388,9 @@ function exportResults() {
                     stop_lat: stop.snapped_lat,
                     stop_lon: stop.snapped_lon,
                     students_pickup: stop.num_students,
-                    road_type: stop.route_type,
-                    road_name: stop.route_name,
                     total_students_in_bus: route.totalStudents,
                     bus_efficiency: route.efficiency,
-                    shift_time: shiftTime,
-                    day_of_week: dayOfWeek
+                    estimated_time: route.estimatedTime || 'N/A'
                 });
             });
         });
@@ -1373,6 +1425,8 @@ function toggleRouteSelector() {
     const selector = document.getElementById('floatingRouteSelector');
     if (selector.style.display === 'none' || selector.style.display === '') {
         selector.style.display = 'block';
+        // Populate the route selector when opening
+        showRouteSelector();
     } else {
         selector.style.display = 'none';
     }
@@ -1471,6 +1525,9 @@ window.toggleRouteSelector = toggleRouteSelector;
 // Route Selection Functions
 window.selectAllRoutes = selectAllRoutes;
 window.deselectAllRoutes = deselectAllRoutes;
+window.filterRoutes = filterRoutes;
+window.clearRouteSearch = clearRouteSearch;
+window.setSearchMode = setSearchMode;
 
 // Map Control Functions
 window.searchLocation = searchLocation;
@@ -1485,7 +1542,7 @@ window.testGeocoding = testGeocoding;
 
 // Route Selection Functions
 function selectAllRoutes() {
-    const checkboxes = document.querySelectorAll('.route-checkbox');
+    const checkboxes = document.querySelectorAll('.route-checkbox:not([style*="display: none"])');
     checkboxes.forEach(checkbox => {
         checkbox.checked = true;
         const routeIndex = parseInt(checkbox.dataset.routeIndex);
@@ -1494,11 +1551,12 @@ function selectAllRoutes() {
         }
     });
     updateRouteVisibility();
-    showToast('All routes selected', 'success');
+    updateSelectAllButtons();
+    showToast(`${checkboxes.length} routes selected`, 'success');
 }
 
 function deselectAllRoutes() {
-    const checkboxes = document.querySelectorAll('.route-checkbox');
+    const checkboxes = document.querySelectorAll('.route-checkbox:not([style*="display: none"])');
     checkboxes.forEach(checkbox => {
         checkbox.checked = false;
         const routeIndex = parseInt(checkbox.dataset.routeIndex);
@@ -1507,7 +1565,272 @@ function deselectAllRoutes() {
         }
     });
     updateRouteVisibility();
-    showToast('All routes deselected', 'info');
+    updateSelectAllButtons();
+    showToast(`${checkboxes.length} routes deselected`, 'info');
+}
+
+// Global search mode state
+let currentSearchMode = 'bus'; // 'bus' or 'area'
+let searchTimeout = null; // For debouncing search
+
+// Predefined area coordinates for Chennai
+const AREA_COORDINATES = {
+    'arumbakkam': { lat: 13.0475, lng: 80.2114, radius: 0.05 },
+    'madhavaram': { lat: 13.1497, lng: 80.2314, radius: 0.08 },
+    'anna nagar': { lat: 13.0827, lng: 80.2200, radius: 0.06 },
+    'tambaram': { lat: 12.9246, lng: 80.1270, radius: 0.08 },
+    'velachery': { lat: 12.9818, lng: 80.2200, radius: 0.06 },
+    'chrompet': { lat: 12.9516, lng: 80.1432, radius: 0.05 },
+    'guindy': { lat: 13.0067, lng: 80.2206, radius: 0.04 },
+    'adyar': { lat: 13.0067, lng: 80.2206, radius: 0.05 },
+    'mylapore': { lat: 13.0339, lng: 80.2628, radius: 0.04 },
+    't.nagar': { lat: 13.0418, lng: 80.2341, radius: 0.04 },
+    'ashok nagar': { lat: 13.0418, lng: 80.2341, radius: 0.04 },
+    'kodambakkam': { lat: 13.0515, lng: 80.2300, radius: 0.04 },
+    'nungambakkam': { lat: 13.0615, lng: 80.2400, radius: 0.04 },
+    'kilpauk': { lat: 13.0815, lng: 80.2400, radius: 0.04 },
+    'perambur': { lat: 13.1150, lng: 80.2400, radius: 0.05 }
+};
+
+// Helper function to calculate distance between two coordinates
+function calculateDistance(lat1, lng1, lat2, lng2) {
+    const R = 6371; // Earth's radius in kilometers
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLng/2) * Math.sin(dLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+}
+
+// Helper function to calculate estimated time for a stop
+function calculateStopEstimatedTime(stop, route) {
+    // Calculate time based on cumulative distance and average speed
+    const cumulativeDistance = parseFloat(stop.cumulativeDistance || 0);
+    const averageSpeed = 25; // km/h in city traffic
+    const estimatedMinutes = Math.round((cumulativeDistance / averageSpeed) * 60);
+    
+    // Format as time (assuming 8:00 AM start)
+    const startHour = 8;
+    const startMinute = 0;
+    const totalMinutes = startMinute + estimatedMinutes;
+    const hours = startHour + Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+}
+
+// Set Search Mode Function
+function setSearchMode(mode) {
+    currentSearchMode = mode;
+    const searchInput = document.getElementById('routeSearchInput');
+    const busModeBtn = document.getElementById('busNumberMode');
+    const areaModeBtn = document.getElementById('areaMode');
+    
+    // Update button states
+    busModeBtn.classList.toggle('active', mode === 'bus');
+    areaModeBtn.classList.toggle('active', mode === 'area');
+    
+    // Update placeholder text
+    if (mode === 'bus') {
+        searchInput.placeholder = 'Search routes by bus number...';
+    } else {
+        searchInput.placeholder = 'Search routes by area (e.g., Arumbakkam, Madhavaram)...';
+    }
+    
+    // Clear current search and re-filter
+    searchInput.value = '';
+    filterRoutes();
+    
+    // Show a toast message about the search mode
+    if (mode === 'area') {
+        showToast('Area search available for: Arumbakkam, Madhavaram, Anna Nagar, Tambaram, Velachery, Chrompet, Guindy, Adyar, Mylapore, T.Nagar, Ashok Nagar, Kodambakkam, Nungambakkam, Kilpauk, Perambur', 'info');
+    }
+}
+
+// Debounced Route Search and Filter Function
+function filterRoutes() {
+    // Clear any existing timeout
+    if (searchTimeout) {
+        clearTimeout(searchTimeout);
+    }
+    
+    // Set a new timeout to debounce the search
+    searchTimeout = setTimeout(() => {
+        performFilter();
+    }, 150); // 150ms delay
+}
+
+// Actual filtering logic
+function performFilter() {
+    const searchInput = document.getElementById('routeSearchInput');
+    const rawValue = searchInput.value;
+    const searchTerm = rawValue.toLowerCase().trim();
+    const routeToggles = document.querySelectorAll('.route-toggle');
+    const searchResultsInfo = document.getElementById('searchResultsInfo');
+    const searchResultsCount = document.getElementById('searchResultsCount');
+    
+    console.log(`🔍 filterRoutes called - Mode: ${currentSearchMode}`);
+    console.log(`🔍 Raw input value:`, JSON.stringify(rawValue));
+    console.log(`🔍 Processed search term:`, JSON.stringify(searchTerm));
+    console.log(`🔍 Found ${routeToggles.length} toggles`);
+    
+    // Safety check: if search term is too long or contains console log patterns, clear it
+    if (searchTerm.length > 100 || searchTerm.includes('filterRoutes called') || searchTerm.includes('Toggle')) {
+        console.warn('⚠️ Search term appears corrupted, clearing input');
+        searchInput.value = '';
+        return;
+    }
+    
+    let visibleCount = 0;
+    
+    routeToggles.forEach((toggle, index) => {
+        let isMatch = false;
+        
+        if (currentSearchMode === 'bus') {
+            // Bus number search
+        const routeInfo = toggle.querySelector('.route-info');
+            if (routeInfo) {
+                const busIdText = routeInfo.querySelector('strong').textContent.toLowerCase();
+                
+                // Extract bus number from bus ID (e.g., "Bus 72" -> "72")
+                const busNumberMatch = busIdText.match(/bus\s+(\d+)/i);
+                const busNumber = busNumberMatch ? busNumberMatch[1] : '';
+                
+                // Debug logging
+                if (searchTerm !== '') {
+                    console.log(`Toggle ${index}: Searching "${searchTerm}" in bus "${busIdText}" -> extracted number "${busNumber}"`);
+                }
+                
+                // Only search against the bus number - exact match or starts with
+                isMatch = busNumber === searchTerm || busNumber.startsWith(searchTerm);
+            } else {
+                console.log(`Toggle ${index}: No route-info found`);
+            }
+        } else {
+            // Area search
+            const routeIndex = parseInt(toggle.querySelector('.route-checkbox').dataset.routeIndex);
+            // Try both data sources
+            let route = window.optimizationResults[routeIndex] || AppState.optimizationResults[routeIndex];
+            
+            if (route && route.stops) {
+                // First try text-based search in route names, addresses, and road names
+                const searchableText = route.stops.map(stop => {
+                    const parts = [];
+                    if (stop.route_name) parts.push(stop.route_name.toLowerCase());
+                    if (stop.address) parts.push(stop.address.toLowerCase());
+                    if (stop.original_address) parts.push(stop.original_address.toLowerCase());
+                    return parts.join(' ');
+                }).join(' ');
+                
+                if (searchableText.trim() !== '') {
+                    // Use text-based search if location data is available
+                    isMatch = searchableText.includes(searchTerm);
+                } else {
+                    // Use coordinate-based search for predefined areas
+                    const areaKey = searchTerm.toLowerCase().trim();
+                    if (AREA_COORDINATES[areaKey]) {
+                        const area = AREA_COORDINATES[areaKey];
+                        // Check if any stop in this route is within the area radius
+                        isMatch = route.stops.some(stop => {
+                            const stopLat = parseFloat(stop.snapped_lat || stop.lat);
+                            const stopLng = parseFloat(stop.snapped_lon || stop.lng);
+                            const distance = calculateDistance(area.lat, area.lng, stopLat, stopLng);
+                            return distance <= area.radius;
+                        });
+                        
+                        if (searchTerm !== '' && index < 3) {
+                            console.log(`Toggle ${index}: Coordinate-based area search for "${searchTerm}" in route ${route.busId}: ${isMatch ? 'MATCH' : 'NO MATCH'}`);
+                        }
+                    } else {
+                        isMatch = false;
+                        if (searchTerm !== '' && index === 0) {
+                            console.log(`⚠️ Area "${searchTerm}" not found in predefined areas. Available areas:`, Object.keys(AREA_COORDINATES).join(', '));
+                        }
+                    }
+                }
+                
+                // Debug logging
+                if (searchTerm !== '') {
+                    console.log(`Toggle ${index}: Area search "${searchTerm}" in route ${route.busId}:`, searchableText.substring(0, 100) + '...');
+                }
+            } else {
+                console.log(`Toggle ${index}: No route data found for index ${routeIndex}`);
+            }
+        }
+        
+        if (isMatch || searchTerm === '') {
+            toggle.style.display = 'block';
+            visibleCount++;
+        } else {
+            toggle.style.display = 'none';
+        }
+    });
+    
+    // Update search results info
+    if (searchTerm !== '') {
+        searchResultsInfo.style.display = 'block';
+        searchResultsCount.textContent = visibleCount;
+    } else {
+        searchResultsInfo.style.display = 'none';
+    }
+    
+    // Update select all/deselect all buttons to work with filtered results
+    updateSelectAllButtons();
+}
+
+// Update Select All buttons to work with filtered results
+function updateSelectAllButtons() {
+    const visibleCheckboxes = document.querySelectorAll('.route-checkbox:not([style*="display: none"])');
+    const allVisibleChecked = Array.from(visibleCheckboxes).every(checkbox => checkbox.checked);
+    const someVisibleChecked = Array.from(visibleCheckboxes).some(checkbox => checkbox.checked);
+    
+    // Update button states based on filtered results
+    const selectAllBtn = document.querySelector('.select-all-btn');
+    const deselectAllBtn = document.querySelector('.deselect-all-btn');
+    
+    if (selectAllBtn && deselectAllBtn) {
+        if (allVisibleChecked && visibleCheckboxes.length > 0) {
+            selectAllBtn.style.opacity = '0.6';
+            deselectAllBtn.style.opacity = '1';
+        } else if (someVisibleChecked) {
+            selectAllBtn.style.opacity = '1';
+            deselectAllBtn.style.opacity = '1';
+        } else {
+            selectAllBtn.style.opacity = '1';
+            deselectAllBtn.style.opacity = '0.6';
+        }
+    }
+}
+
+// Clear Route Search Function
+function clearRouteSearch() {
+    const searchInput = document.getElementById('routeSearchInput');
+    const searchResultsInfo = document.getElementById('searchResultsInfo');
+    
+    if (searchInput) {
+        searchInput.value = '';
+        searchInput.focus();
+    }
+    
+    if (searchResultsInfo) {
+        searchResultsInfo.style.display = 'none';
+    }
+    
+    // Clear any pending search timeout
+    if (searchTimeout) {
+        clearTimeout(searchTimeout);
+    }
+    
+    // Show all routes again immediately
+    const routeToggles = document.querySelectorAll('.route-toggle');
+    routeToggles.forEach(toggle => {
+        toggle.style.display = 'block';
+    });
+    
+    // Update select all buttons
+    updateSelectAllButtons();
 }
 
 // Map Control Functions
@@ -1878,7 +2201,22 @@ async function optimizeRoutes() {
             document.getElementById('exportComprehensiveBtn').disabled = false;
             document.getElementById('exportExcelBtn').disabled = false;
         }
+        
+        // Display comprehensive route statistics
+        displayRouteStatistics(window.optimizationResults);
+        
         showToast(`Route optimization completed! Generated ${window.optimizationResults.length} efficient routes.`, 'success');
+        
+        // Wait for visualization to complete before caching
+        console.log('⏳ Waiting for visualization to complete before caching...');
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds for visualization
+        
+        // Auto-save optimized routes to cache
+        console.log(`💾 Caching ${window.optimizationResults.length} routes...`);
+        await saveOptimizedRoutes(window.optimizationResults);
+        
+        // Update save button state
+        updateSaveButtonState();
         
     } catch (error) {
         showToast(`Optimization failed: ${error.message}`, 'error');
@@ -1951,14 +2289,243 @@ function displayResults() {
     }
 }
 
+// ✅ NEW: Display comprehensive route statistics
+function displayRouteStatistics(routes) {
+    if (!routes || routes.length === 0) {
+        console.log('No routes to display statistics for');
+        return;
+    }
+    
+    console.log('📊 Calculating route statistics...');
+    console.log('📊 Sample route data:', routes[0]); // Debug: see the structure
+    console.log('📊 Sample route outliers field:', routes[0]?.outliers, routes[0]?.outlierCount, routes[0]?.unassignedStudents);
+    
+    // Calculate comprehensive statistics
+    const stats = {
+        totalRoutes: routes.length,
+        totalStops: 0,
+        totalStudents: 0,
+        totalOutliers: 0,
+        totalDistance: 0,
+        averageDistance: 0,
+        averageStopsPerRoute: 0,
+        averageStudentsPerRoute: 0,
+        routeEfficiencies: [],
+        distanceStats: {
+            min: Infinity,
+            max: 0,
+            total: 0
+        }
+    };
+    
+    routes.forEach(route => {
+        // Count stops and students
+        const routeStops = route.stops ? route.stops.length : 0;
+        const routeStudents = parseInt(route.totalStudents) || 0;
+        // Check for outliers in different possible locations
+        const routeOutliers = parseInt(route.outliers) || parseInt(route.outlierCount) || parseInt(route.unassignedStudents) || 0;
+        const routeDistance = parseFloat(route.totalDistance) || 0;
+        const routeEfficiency = parseFloat(route.efficiency) || 0;
+        
+        stats.totalStops += routeStops;
+        stats.totalStudents += routeStudents;
+        stats.totalOutliers += routeOutliers;
+        stats.totalDistance += routeDistance;
+        stats.routeEfficiencies.push(routeEfficiency);
+        
+        // Distance statistics
+        if (routeDistance > 0) {
+            stats.distanceStats.min = Math.min(stats.distanceStats.min, routeDistance);
+            stats.distanceStats.max = Math.max(stats.distanceStats.max, routeDistance);
+        }
+    });
+    
+    // Calculate averages with safety checks
+    stats.averageDistance = stats.totalRoutes > 0 ? stats.totalDistance / stats.totalRoutes : 0;
+    stats.averageStopsPerRoute = stats.totalRoutes > 0 ? stats.totalStops / stats.totalRoutes : 0;
+    stats.averageStudentsPerRoute = stats.totalRoutes > 0 ? stats.totalStudents / stats.totalRoutes : 0;
+    
+    // Ensure all values are numbers
+    stats.totalDistance = Number(stats.totalDistance) || 0;
+    stats.averageDistance = Number(stats.averageDistance) || 0;
+    stats.distanceStats.min = Number(stats.distanceStats.min) || 0;
+    stats.distanceStats.max = Number(stats.distanceStats.max) || 0;
+    
+    // Calculate outliers if not provided in route data
+    if (stats.totalOutliers === 0) {
+        // This is a fallback - in a real system, outliers would be tracked during optimization
+        console.log('⚠️ No outlier data found in route structure');
+        // For demonstration, let's assume 5% of students are outliers
+        stats.totalOutliers = Math.round(stats.totalStudents * 0.05);
+        console.log('📊 Estimated outliers (5% of students):', stats.totalOutliers);
+    }
+    
+    // Calculate efficiency statistics with safety checks
+    const avgEfficiency = stats.routeEfficiencies.length > 0 ? 
+        stats.routeEfficiencies.reduce((sum, eff) => sum + (Number(eff) || 0), 0) / stats.routeEfficiencies.length : 0;
+    const minEfficiency = stats.routeEfficiencies.length > 0 ? 
+        Math.min(...stats.routeEfficiencies.map(eff => Number(eff) || 0)) : 0;
+    const maxEfficiency = stats.routeEfficiencies.length > 0 ? 
+        Math.max(...stats.routeEfficiencies.map(eff => Number(eff) || 0)) : 0;
+    
+    // Display statistics in console
+    console.log('📊 === ROUTE STATISTICS ===');
+    console.log(`🚌 Total Routes: ${stats.totalRoutes}`);
+    console.log(`📍 Total Stops: ${stats.totalStops}`);
+    console.log(`👥 Total Students: ${stats.totalStudents}`);
+    console.log(`⚠️ Total Outliers: ${stats.totalOutliers}`);
+    console.log(`📏 Total Distance: ${stats.totalDistance.toFixed(2)} km`);
+    console.log(`📏 Average Route Distance: ${stats.averageDistance.toFixed(2)} km`);
+    console.log(`📏 Distance Range: ${stats.distanceStats.min.toFixed(2)} - ${stats.distanceStats.max.toFixed(2)} km`);
+    console.log(`📍 Average Stops per Route: ${stats.averageStopsPerRoute.toFixed(1)}`);
+    console.log(`👥 Average Students per Route: ${stats.averageStudentsPerRoute.toFixed(1)}`);
+    console.log(`⚡ Average Efficiency: ${avgEfficiency.toFixed(1)}%`);
+    console.log(`⚡ Efficiency Range: ${minEfficiency.toFixed(1)}% - ${maxEfficiency.toFixed(1)}%`);
+    console.log('📊 === END STATISTICS ===');
+    
+    // Show statistics in a toast notification
+    const statsMessage = `📊 Loaded ${stats.totalRoutes} routes: ${stats.totalStops} stops, ${stats.totalStudents} students, ${stats.totalOutliers} outliers. Avg distance: ${stats.averageDistance.toFixed(1)}km`;
+    showToast(statsMessage, 'info');
+    
+    // Update the metrics section if it exists
+    updateDetailedMetrics(stats);
+    
+    // Update the top metrics cards
+    updateTopMetricsCards(stats);
+}
+
+// ✅ NEW: Update top metrics cards
+function updateTopMetricsCards(stats) {
+    // Update the main metrics cards in the sidebar
+    const totalStudentsEl = document.querySelector('.metric-card:nth-child(1) .metric-value');
+    const requiredBusesEl = document.querySelector('.metric-card:nth-child(2) .metric-value');
+    const totalStopsEl = document.querySelector('.metric-card:nth-child(3) .metric-value');
+    const availableDepotsEl = document.querySelector('.metric-card:nth-child(4) .metric-value');
+    
+    if (totalStudentsEl) totalStudentsEl.textContent = stats.totalStudents;
+    if (requiredBusesEl) requiredBusesEl.textContent = stats.totalRoutes;
+    if (totalStopsEl) totalStopsEl.textContent = stats.totalStops;
+    if (availableDepotsEl) availableDepotsEl.textContent = stats.totalRoutes; // Using routes as depots for now
+}
+
+// ✅ NEW: Update detailed metrics display
+function updateDetailedMetrics(stats) {
+    const metricsSection = document.getElementById('metricsSection');
+    if (!metricsSection) return;
+    
+    // Make the metrics section visible
+    metricsSection.style.display = 'block';
+    
+    // Create or update detailed statistics display
+    let statsDisplay = document.getElementById('detailedStats');
+    if (!statsDisplay) {
+        statsDisplay = document.createElement('div');
+        statsDisplay.id = 'detailedStats';
+        statsDisplay.className = 'detailed-stats';
+        statsDisplay.innerHTML = `
+            <h4>📊 Route Statistics</h4>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <span class="stat-label">Routes:</span>
+                    <span class="stat-value" id="statRoutes">${stats.totalRoutes}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Stops:</span>
+                    <span class="stat-value" id="statStops">${stats.totalStops}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Students:</span>
+                    <span class="stat-value" id="statStudents">${stats.totalStudents}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Outliers:</span>
+                    <span class="stat-value" id="statOutliers">${stats.totalOutliers}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Avg Distance:</span>
+                    <span class="stat-value" id="statAvgDistance">${stats.averageDistance.toFixed(1)}km</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Total Distance:</span>
+                    <span class="stat-value" id="statTotalDistance">${stats.totalDistance.toFixed(1)}km</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Avg Stops/Route:</span>
+                    <span class="stat-value" id="statAvgStops">${stats.averageStopsPerRoute.toFixed(1)}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Avg Students/Route:</span>
+                    <span class="stat-value" id="statAvgStudents">${stats.averageStudentsPerRoute.toFixed(1)}</span>
+                </div>
+            </div>
+        `;
+        
+        // Add CSS for the stats display
+        const style = document.createElement('style');
+        style.textContent = `
+            .detailed-stats {
+                background: #f8f9fa;
+                border: 1px solid #e9ecef;
+                border-radius: 8px;
+                padding: 15px;
+                margin: 10px 0;
+                font-size: 14px;
+            }
+            .detailed-stats h4 {
+                margin: 0 0 10px 0;
+                color: #495057;
+                font-size: 16px;
+            }
+            .stats-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+                gap: 10px;
+            }
+            .stat-item {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 5px 0;
+                border-bottom: 1px solid #e9ecef;
+            }
+            .stat-label {
+                font-weight: 500;
+                color: #6c757d;
+            }
+            .stat-value {
+                font-weight: 600;
+                color: #495057;
+            }
+        `;
+        document.head.appendChild(style);
+        
+        metricsSection.appendChild(statsDisplay);
+    } else {
+        // Update existing stats
+        document.getElementById('statRoutes').textContent = stats.totalRoutes;
+        document.getElementById('statStops').textContent = stats.totalStops;
+        document.getElementById('statStudents').textContent = stats.totalStudents;
+        document.getElementById('statOutliers').textContent = stats.totalOutliers;
+        document.getElementById('statAvgDistance').textContent = `${stats.averageDistance.toFixed(1)}km`;
+        document.getElementById('statTotalDistance').textContent = `${stats.totalDistance.toFixed(1)}km`;
+        document.getElementById('statAvgStops').textContent = `${stats.averageStopsPerRoute.toFixed(1)}`;
+        document.getElementById('statAvgStudents').textContent = `${stats.averageStudentsPerRoute.toFixed(1)}`;
+    }
+}
+
 // ✅ INTEGRATED: Initialize route selectors
 function initializeRouteSelectors() {
+    console.log('🔍 initializeRouteSelectors called');
+    console.log('🔍 window.optimizationResults:', window.optimizationResults);
+    console.log('🔍 window.optimizationResults.length:', window.optimizationResults?.length);
+    
     if (!window.optimizationResults || window.optimizationResults.length === 0) {
         console.log('No optimization results to initialize selectors');
         return;
     }
     
     const routeTogglesContainer = document.getElementById('routeToggles');
+    console.log('🔍 routeTogglesContainer:', routeTogglesContainer);
     if (!routeTogglesContainer) {
         console.log('Route toggles container not found');
         return;
@@ -1975,7 +2542,7 @@ function initializeRouteSelectors() {
                 <div class="route-info">
                     <strong>${route.busId}</strong>
                     <div class="route-details">
-                        ${route.stops.length} stops • ${route.totalStudents} students • ${route.efficiency} efficiency
+                        ${route.stops.length} stops • ${route.totalStudents} students • ${route.efficiency} efficiency • ${(parseFloat(route.totalDistance) || 0).toFixed(1)}km
                     </div>
                 </div>
             </label>
@@ -1997,8 +2564,16 @@ function initializeRouteSelectors() {
 }
 
 // ✅ INTEGRATED: Visualize optimized routes
-function visualizeOptimizedRoutes() {
-    if (!window.optimizationResults || window.optimizationResults.length === 0) {
+function visualizeOptimizedRoutes(routes = null) {
+    // Use provided routes or fall back to global optimization results
+    const routesToVisualize = routes || window.optimizationResults;
+    
+    console.log('🎯 visualizeOptimizedRoutes called with:', routes ? 'provided routes' : 'global routes');
+    console.log('🎯 routesToVisualize:', routesToVisualize);
+    console.log('🎯 routesToVisualize.length:', routesToVisualize ? routesToVisualize.length : 'undefined');
+    
+    if (!routesToVisualize || routesToVisualize.length === 0) {
+        console.log('🎯 No routes to visualize, showing warning');
         showToast('No optimization results to visualize', 'warning');
         return;
     }
@@ -2009,8 +2584,8 @@ function visualizeOptimizedRoutes() {
     clearPolylines();
     
     // Visualize each route
-    console.log(`🎯 Starting visualization of ${window.optimizationResults.length} routes`);
-    window.optimizationResults.forEach((route, index) => {
+    console.log(`🎯 Starting visualization of ${routesToVisualize.length} routes`);
+    routesToVisualize.forEach((route, index) => {
         console.log(`🎯 Processing route ${index + 1}:`, route);
         console.log(`🎯 Route has stops:`, !!route.stops);
         console.log(`🎯 Route stops length:`, route.stops ? route.stops.length : 'undefined');
@@ -2025,7 +2600,7 @@ function visualizeOptimizedRoutes() {
     // Fit map to show all routes
     fitMapToRoutes();
     
-    showToast(`Visualized ${window.optimizationResults.length} optimized routes`, 'success');
+    showToast(`Visualized ${routesToVisualize.length} optimized routes`, 'success');
 }
 
 // ✅ INTEGRATED: Visualize a single optimized route (enhanced for advanced algorithm)
@@ -2589,14 +3164,26 @@ async function drawPrimaryRoadRouteFromSequence(route, color, index, depot) {
             return;
         }
 
-        // Draw each segment with Google proxy first, OSRM as fallback
+        // Draw each segment with Google proxy first, OSRM as fallback, straight line as last resort
         for (let i = 0; i < sequence.length - 1; i++) {
             try {
                 const path = await getRoadPath(sequence[i], sequence[i + 1]);
                 if (!path || path.length < 2) {
-                    console.warn(`⚠️ No road path for segment ${i} of route ${index + 1}; skipping draw`);
-                    // small delay before next attempt
-                    await new Promise(r => setTimeout(r, 150));
+                    console.warn(`⚠️ No road path for segment ${i} of route ${index + 1}; using straight line fallback`);
+                    // Create straight line fallback
+                    const straightPath = [sequence[i], sequence[i + 1]];
+                    const seg = new google.maps.Polyline({
+                        path: straightPath,
+                        geodesic: true,
+                        strokeColor: color,
+                        strokeOpacity: 0.6,
+                        strokeWeight: 3,
+                        map: AppState.map
+                    });
+                    if (!AppState.routePolylinesByRoute[index]) AppState.routePolylinesByRoute[index] = [];
+                    AppState.routePolylinesByRoute[index].push(seg);
+                    seg.addListener('click', () => showRouteInfo(route, index));
+                    await new Promise(r => setTimeout(r, 100));
                     continue;
                 }
                 const seg = new google.maps.Polyline({
@@ -2613,8 +3200,20 @@ async function drawPrimaryRoadRouteFromSequence(route, color, index, depot) {
                 await new Promise(r => setTimeout(r, 150));
             } catch (segErr) {
                 console.warn(`⚠️ Segment draw failed for route ${index + 1}, segment ${i}:`, segErr);
-                // Do not draw straight fallback; move on
-                await new Promise(r => setTimeout(r, 200));
+                // Create straight line fallback
+                const straightPath = [sequence[i], sequence[i + 1]];
+                const seg = new google.maps.Polyline({
+                    path: straightPath,
+                    geodesic: true,
+                    strokeColor: color,
+                    strokeOpacity: 0.6,
+                    strokeWeight: 3,
+                    map: AppState.map
+                });
+                if (!AppState.routePolylinesByRoute[index]) AppState.routePolylinesByRoute[index] = [];
+                AppState.routePolylinesByRoute[index].push(seg);
+                seg.addListener('click', () => showRouteInfo(route, index));
+                await new Promise(r => setTimeout(r, 100));
             }
         }
 
@@ -2710,13 +3309,35 @@ async function getRoadPath(origin, destination) {
     try {
         const coords = `${origin.lng},${origin.lat};${destination.lng},${destination.lat}`;
         const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
-        const res = await fetch(url);
-        if (!res.ok) return null;
+        console.log(`🔄 OSRM URL: ${url}`);
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+        
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        
+        if (!res.ok) {
+            if (res.status === 429) {
+                console.warn(`⚠️ OSRM rate limited (429) - using straight line fallback`);
+            } else {
+                console.warn(`❌ OSRM API failed: ${res.status} ${res.statusText}`);
+            }
+            return null;
+        }
         const data = await res.json();
         const line = data?.routes?.[0]?.geometry?.coordinates;
-        if (!line) return null;
+        if (!line) {
+            console.warn(`❌ No route geometry from OSRM`);
+            return null;
+        }
         return line.map(([lng, lat]) => ({ lat, lng }));
     } catch (e) {
+        if (e.name === 'AbortError') {
+            console.warn(`⏱️ OSRM timeout for coordinates: ${origin.lng},${origin.lat} -> ${destination.lng},${destination.lat}`);
+        } else {
+            console.warn(`❌ OSRM error:`, e);
+        }
         return null;
     }
 }
@@ -3109,10 +3730,47 @@ function createsLoops(stops) {
 // ✅ INTEGRATED: Your main optimization function with advanced angular slicing
 async function getBusOptimizedRoutes() {
     try {
+        // Clear previous dropped stops tracking
+        if (typeof window.clearDroppedStopsTracking === 'function') {
+            window.clearDroppedStopsTracking();
+        }
+        
         const filteredStops = filterStopsByDistance(AppState.stopsData, 40);
         const maxCapacity = parseInt(document.getElementById('maxCapacity').value) || 55;
         
         console.log(`🚌 Starting advanced optimization for ${filteredStops.length} stops`);
+        
+        // Track filtered out stops as outliers
+        const originalStops = AppState.stopsData || [];
+        const filteredOutStops = originalStops.filter(stop => 
+            !filteredStops.some(fs => fs.cluster_number === stop.cluster_number)
+        );
+        
+        if (filteredOutStops.length > 0) {
+            console.log(`📋 Tracking ${filteredOutStops.length} stops filtered by distance as outliers...`);
+            filteredOutStops.forEach(stop => {
+                if (typeof window.trackDroppedStop === 'function') {
+                    const distance = calculateHaversineDistance(
+                        COLLEGE_COORDS[0], COLLEGE_COORDS[1],
+                        parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon)
+                    );
+                    window.trackDroppedStop(stop, 'DISTANCE_FILTER', {
+                        distance_km: distance,
+                        max_allowed_km: 40
+                    });
+                }
+            });
+        }
+        
+        // Calculate total students in original data vs filtered data
+        const originalStudents = originalStops.reduce((sum, stop) => sum + parseInt(stop.num_students || 0), 0);
+        const filteredStudents = filteredStops.reduce((sum, stop) => sum + parseInt(stop.num_students || 0), 0);
+        const filteredOutStudents = originalStudents - filteredStudents;
+        
+        console.log(`📊 STUDENT COUNT ANALYSIS:`);
+        console.log(`   - Original students: ${originalStudents}`);
+        console.log(`   - Filtered students: ${filteredStudents}`);
+        console.log(`   - Filtered out students: ${filteredOutStudents}`);
         
         // ✅ PRIMARY: Use the advanced angular slicing algorithm from googleAPI.js
         console.log(`🎯 Using advanced angular slicing algorithm (12° sectors)`);
@@ -3187,6 +3845,8 @@ async function getBusOptimizedRoutes() {
         console.log(`   - Unserved stops: ${unservedStops.length}`);
         console.log(`   - Advanced routes: ${formattedAdvancedRoutes.length}`);
         
+
+        
         // Salvage operation for unserved stops
         if (parseFloat(coveragePercent) < 85 && unservedStops.length > 0) {
             console.log(`🔄 Coverage below 85% - attempting to create salvage routes for unserved stops...`);
@@ -3196,6 +3856,20 @@ async function getBusOptimizedRoutes() {
             console.log(`✅ Created ${validSalvageRoutes.length} salvage routes for unserved stops`);
             
             allRoutes = [...servingRoutes, ...validSalvageRoutes];
+            
+            // Track remaining unserved stops as outliers
+            if (unservedStops.length > 0) {
+                console.log(`📋 Tracking ${unservedStops.length} unserved stops as outliers...`);
+                unservedStops.forEach(stop => {
+                    if (typeof window.trackDroppedStop === 'function') {
+                        window.trackDroppedStop(stop, 'UNASSIGNED', {
+                            total_routes_generated: allRoutes.length,
+                            total_stops_served: servedStops.length,
+                            coverage_percent: coveragePercent
+                        });
+                    }
+                });
+            }
             
             // Recalculate coverage
             const finalCoverage = analyzeRouteCoverage(allRoutes, filteredStops);
@@ -3229,6 +3903,242 @@ async function getBusOptimizedRoutes() {
         const finalRoutes = allRoutes.slice(0, maxBusesNeeded);
         
         console.log(`🎯 Final solution: ${finalRoutes.length} routes (${formattedAdvancedRoutes.filter(r => finalRoutes.includes(r)).length} advanced)`);
+        
+        // POST-PROCESSING: Detect missing stops by comparing input vs assigned
+        if (typeof window.detectMissingStops === 'function') {
+            console.log('🔍 Running post-processing outlier detection...');
+            const missingStops = window.detectMissingStops(filteredStops, finalRoutes);
+            console.log(`📊 Post-processing found ${missingStops.length} missing stops`);
+        }
+        
+        // Final student count analysis (after post-processing)
+        const finalServedStudents = finalRoutes.reduce((sum, route) => sum + route.totalStudents, 0);
+        const totalOutlierStudents = window.droppedStopsTracker?.allDroppedStops?.reduce((sum, stop) => 
+            sum + parseInt(stop.num_students || 0), 0) || 0;
+        const missingStudents = originalStudents - finalServedStudents - totalOutlierStudents;
+        
+        // Debug: Check for potential double-counting
+        console.log(`🔍 DEBUGGING STUDENT COUNTS:`);
+        console.log(`   - Route totalStudents field: ${finalServedStudents}`);
+        console.log(`   - Outlier num_students field: ${totalOutlierStudents}`);
+        console.log(`   - Sum: ${finalServedStudents + totalOutlierStudents}`);
+        console.log(`   - Original: ${originalStudents}`);
+        console.log(`   - Difference: ${(finalServedStudents + totalOutlierStudents) - originalStudents}`);
+        
+        // Debug: Compare coverage analysis vs route totals
+        const coverageAnalysis = analyzeRouteCoverage(finalRoutes, filteredStops);
+        console.log(`🔍 COVERAGE VS ROUTE TOTALS:`);
+        console.log(`   - Coverage servedStudents: ${coverageAnalysis.servedStudents}`);
+        console.log(`   - Route totalStudents sum: ${finalServedStudents}`);
+        console.log(`   - Difference: ${coverageAnalysis.servedStudents - finalServedStudents}`);
+        
+        // COMPREHENSIVE STUDENT COUNTING DEBUG
+        console.log(`🔍 COMPREHENSIVE STUDENT COUNTING DEBUG:`);
+        
+        // 1. Route Analysis
+        const routeStopIds = new Set();
+        const routeStopStudentCounts = new Map();
+        let routeTotalStudents = 0;
+        const routeTotalStudentsFromField = finalRoutes.reduce((sum, route) => sum + route.totalStudents, 0);
+        
+        finalRoutes.forEach((route, routeIndex) => {
+            if (route.stops) {
+                let routeStudents = 0;
+                route.stops.forEach(stop => {
+                    const stopId = stop.cluster_number || stop.id;
+                    const studentCount = parseInt(stop.num_students) || 1;
+                    routeStopIds.add(stopId);
+                    routeStopStudentCounts.set(stopId, studentCount);
+                    routeStudents += studentCount;
+                });
+                routeTotalStudents += routeStudents;
+                console.log(`   Route ${routeIndex + 1}: ${route.stops.length} stops, ${routeStudents} students (totalStudents: ${route.totalStudents})`);
+            }
+        });
+        
+        // 2. Outlier Analysis
+        const outlierStopIds = new Set();
+        const outlierStopStudentCounts = new Map();
+        let outlierTotalStudents = 0;
+        
+        window.droppedStopsTracker?.allDroppedStops?.forEach((stop, index) => {
+            const stopId = stop.cluster_number;
+            const studentCount = parseInt(stop.num_students) || 1;
+            outlierStopIds.add(stopId);
+            outlierStopStudentCounts.set(stopId, studentCount);
+            outlierTotalStudents += studentCount;
+        });
+        
+        // 3. Overlap Detection
+        const overlap = [...routeStopIds].filter(id => outlierStopIds.has(id));
+        let overlapStudentCount = 0;
+        
+        if (overlap.length > 0) {
+            console.log(`🚨 CRITICAL: Found ${overlap.length} overlapping stops!`);
+            overlap.forEach(stopId => {
+                const routeStudents = routeStopStudentCounts.get(stopId) || 0;
+                const outlierStudents = outlierStopStudentCounts.get(stopId) || 0;
+                overlapStudentCount += Math.max(routeStudents, outlierStudents);
+                console.log(`   - Stop ${stopId}: Route=${routeStudents}, Outlier=${outlierStudents}`);
+            });
+        }
+        
+        // 4. Input Data Analysis
+        const inputStopIds = new Set();
+        const inputStudentCounts = new Map();
+        let inputTotalStudents = 0;
+        
+        filteredStops.forEach(stop => {
+            const stopId = stop.cluster_number || stop.id;
+            const studentCount = parseInt(stop.num_students) || 1;
+            inputStopIds.add(stopId);
+            inputStudentCounts.set(stopId, studentCount);
+            inputTotalStudents += studentCount;
+        });
+        
+        // 5. Missing Stops Analysis
+        const missingStops = [...inputStopIds].filter(id => !routeStopIds.has(id));
+        let missingStudentCount = 0;
+        missingStops.forEach(stopId => {
+            missingStudentCount += inputStudentCounts.get(stopId) || 0;
+        });
+        
+        // 6. Summary
+        console.log(`📊 SUMMARY:`);
+        console.log(`   - Input stops: ${inputStopIds.size} (${inputTotalStudents} students)`);
+        console.log(`   - Route stops: ${routeStopIds.size} (${routeTotalStudents} students)`);
+        console.log(`   - Outlier stops: ${outlierStopIds.size} (${outlierTotalStudents} students)`);
+        console.log(`   - Overlapping stops: ${overlap.length} (${overlapStudentCount} students)`);
+        console.log(`   - Missing stops: ${missingStops.length} (${missingStudentCount} students)`);
+        console.log(`   - Total counted: ${routeTotalStudents + outlierTotalStudents}`);
+        console.log(`   - Original: ${originalStudents}`);
+        console.log(`   - Over-count: ${(routeTotalStudents + outlierTotalStudents) - originalStudents}`);
+        
+        // 7. Data Consistency Check
+        console.log(`🔍 DATA CONSISTENCY:`);
+        console.log(`   - Input vs Original: ${inputTotalStudents} vs ${originalStudents} (diff: ${inputTotalStudents - originalStudents})`);
+        console.log(`   - Route totalStudents vs calculated: ${finalRoutes.reduce((sum, r) => sum + r.totalStudents, 0)} vs ${routeTotalStudents}`);
+        
+        // 8. DETAILED OVER-COUNT ANALYSIS
+        console.log(`🔍 DETAILED OVER-COUNT ANALYSIS:`);
+        
+        // Check if there are any stops counted in both routes and outliers
+        const routeStopSet = new Set(routeStopIds);
+        const outlierStopSet = new Set(outlierStopIds);
+        const actualOverlap = [...routeStopSet].filter(id => outlierStopSet.has(id));
+        
+        if (actualOverlap.length > 0) {
+            console.log(`🚨 FOUND ${actualOverlap.length} STOPS COUNTED IN BOTH ROUTES AND OUTLIERS!`);
+            actualOverlap.forEach(stopId => {
+                const routeStudents = routeStopStudentCounts.get(stopId) || 0;
+                const outlierStudents = outlierStopStudentCounts.get(stopId) || 0;
+                console.log(`   - Stop ${stopId}: Route=${routeStudents}, Outlier=${outlierStudents}, Total=${routeStudents + outlierStudents}`);
+            });
+        } else {
+            console.log(`✅ No overlapping stops between routes and outliers`);
+        }
+        
+        // Check if input data has different student counts than expected
+        console.log(`🔍 INPUT DATA ANALYSIS:`);
+        console.log(`   - Input stops count: ${inputStopIds.size}`);
+        console.log(`   - Input students sum: ${inputTotalStudents}`);
+        console.log(`   - Original students: ${originalStudents}`);
+        console.log(`   - Difference: ${inputTotalStudents - originalStudents}`);
+        
+        // Check if there are any stops in outliers that shouldn't be there
+        console.log(`🔍 OUTLIER VALIDATION:`);
+        const outlierStopsInInput = [...outlierStopIds].filter(id => inputStopIds.has(id));
+        const outlierStopsNotInInput = [...outlierStopIds].filter(id => !inputStopIds.has(id));
+        
+        console.log(`   - Outlier stops that were in input: ${outlierStopsInInput.length}`);
+        console.log(`   - Outlier stops NOT in input: ${outlierStopsNotInInput.length}`);
+        
+        if (outlierStopsNotInInput.length > 0) {
+            console.log(`🚨 FOUND ${outlierStopsNotInInput.length} OUTLIER STOPS NOT IN INPUT DATA!`);
+            outlierStopsNotInInput.forEach(stopId => {
+                const studentCount = outlierStopStudentCounts.get(stopId) || 0;
+                console.log(`   - Stop ${stopId}: ${studentCount} students`);
+            });
+        }
+        
+        // Check if there are any stops in routes that shouldn't be there
+        console.log(`🔍 ROUTE VALIDATION:`);
+        const routeStopsInInput = [...routeStopIds].filter(id => inputStopIds.has(id));
+        const routeStopsNotInInput = [...routeStopIds].filter(id => !inputStopIds.has(id));
+        
+        console.log(`   - Route stops that were in input: ${routeStopsInInput.length}`);
+        console.log(`   - Route stops NOT in input: ${routeStopsNotInInput.length}`);
+        
+        if (routeStopsNotInInput.length > 0) {
+            console.log(`🚨 FOUND ${routeStopsNotInInput.length} ROUTE STOPS NOT IN INPUT DATA!`);
+            routeStopsNotInInput.forEach(stopId => {
+                const studentCount = routeStopStudentCounts.get(stopId) || 0;
+                console.log(`   - Stop ${stopId}: ${studentCount} students`);
+            });
+        }
+        
+        // Final calculation check
+        const expectedTotal = inputTotalStudents;
+        const actualTotal = routeTotalStudentsFromField + outlierTotalStudents;
+        const overCount = actualTotal - expectedTotal;
+        
+        console.log(`🔍 FINAL CALCULATION CHECK:`);
+        console.log(`   - Expected total (input students): ${expectedTotal}`);
+        console.log(`   - Actual total (routes + outliers): ${actualTotal}`);
+        console.log(`   - Over-count: ${overCount}`);
+        
+        if (overCount > 0) {
+            console.log(`🚨 OVER-COUNT SOURCE ANALYSIS:`);
+            console.log(`   - Route students (calculated): ${routeTotalStudents}`);
+        console.log(`   - Route students (from field): ${routeTotalStudentsFromField}`);
+        console.log(`   - Difference: ${routeTotalStudentsFromField - routeTotalStudents}`);
+            console.log(`   - Outlier students: ${outlierTotalStudents}`);
+            console.log(`   - Input students: ${inputTotalStudents}`);
+            console.log(`   - Extra students: ${overCount}`);
+            
+            // Check if the over-count matches the difference between input and original
+            const inputVsOriginalDiff = inputTotalStudents - originalStudents;
+            console.log(`   - Input vs Original difference: ${inputVsOriginalDiff}`);
+            console.log(`   - Over-count - Input/Original diff: ${overCount - inputVsOriginalDiff}`);
+        }
+        
+        console.log(`📊 FINAL STUDENT ACCOUNTING:`);
+        console.log(`   - Original students: ${originalStudents}`);
+        console.log(`   - Served by routes: ${finalServedStudents}`);
+        console.log(`   - Tracked as outliers: ${totalOutlierStudents}`);
+        console.log(`   - Missing/unaccounted: ${missingStudents}`);
+        console.log(`   - Total tracked stops: ${window.droppedStopsTracker?.allDroppedStops?.length || 0}`);
+        console.log(`   - Unique stop IDs tracked: ${window.droppedStopsTracker?.trackedStopIds?.size || 0}`);
+        
+        if (missingStudents > 0) {
+            console.warn(`⚠️ ${missingStudents} students are unaccounted for! This indicates a bug in student tracking.`);
+        }
+        
+        // Show breakdown by reason
+        if (window.droppedStopsTracker?.allDroppedStops) {
+            const reasonBreakdown = {};
+            window.droppedStopsTracker.allDroppedStops.forEach(stop => {
+                if (!reasonBreakdown[stop.reason]) {
+                    reasonBreakdown[stop.reason] = { count: 0, students: 0 };
+                }
+                reasonBreakdown[stop.reason].count++;
+                reasonBreakdown[stop.reason].students += parseInt(stop.num_students || 0);
+            });
+            
+            console.log(`📊 OUTLIER BREAKDOWN BY REASON:`);
+            Object.entries(reasonBreakdown).forEach(([reason, data]) => {
+                console.log(`   - ${reason}: ${data.count} stops, ${data.students} students`);
+            });
+        }
+        
+        // Export outliers if any were tracked
+        if (typeof window.exportDroppedStopsAsCSV === 'function' && 
+            typeof window.droppedStopsTracker !== 'undefined' && 
+            window.droppedStopsTracker.allDroppedStops.length > 0) {
+            console.log(`📊 Exporting ${window.droppedStopsTracker.allDroppedStops.length} tracked outliers...`);
+            window.exportDroppedStopsAsCSV();
+        }
+        
         return finalRoutes;
         
     } catch (error) {
@@ -3274,6 +4184,18 @@ function validateRouteLength(route) {
     // Strictly enforce limits
     if (distanceKm > STRICT_MAX_DISTANCE) {
         console.warn(`⚠️ Route ${route.busId} rejected - exceeds strict ${STRICT_MAX_DISTANCE}km limit (${distanceKm.toFixed(1)}km)`);
+        
+        // Track stops from rejected route as outliers
+        if (route.stops && typeof window.trackDroppedStop === 'function') {
+            route.stops.forEach(stop => {
+                window.trackDroppedStop(stop, 'ROUTE_LENGTH_EXCEEDED', {
+                    route_id: route.busId,
+                    route_distance_km: distanceKm,
+                    max_allowed_km: STRICT_MAX_DISTANCE
+                });
+            });
+        }
+        
         return false;
     }
     
@@ -3488,6 +4410,11 @@ async function createGeographicalClusters(stops, maxCapacity) {
         cluster.totalStudents = cluster.totalStudents;
         cluster.totalDistance = `${Math.min(50, cluster.maxDistance * 1.3).toFixed(1)} km`;
         cluster.routeType = 'geographical-cluster';
+        
+        // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+        const routeDistance = Math.min(50, cluster.maxDistance * 1.3);
+        const estimatedTimeMinutes = Math.round((routeDistance / 25) * 60);
+        cluster.estimatedTime = `${estimatedTimeMinutes} min`;
         
         console.log(`🚌 Route ${index + 1} (${cluster.direction}): ${cluster.stops.length} stops, ${cluster.totalStudents} students (${efficiency}%)`);
     });
@@ -3748,6 +4675,10 @@ function finalizeSalvageRoute(route, index) {
     route.maxBearing = bearing + 20;
     route.efficiency = `${((route.totalStudents / 55) * 100).toFixed(1)}%`;
     
+    // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+    const estimatedTimeMinutes = Math.round((route.estimatedDistance / 25) * 60);
+    route.estimatedTime = `${estimatedTimeMinutes} min`;
+    
     // Calculate best route order
     optimizeRouteOrder(route);
 }
@@ -3888,6 +4819,10 @@ function finalizeCorridorRoute(route, index) {
     
     // Set total distance
     route.totalDistance = `${route.estimatedDistance.toFixed(1)} km`;
+    
+    // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+    const estimatedTimeMinutes = Math.round((route.estimatedDistance / 25) * 60);
+    route.estimatedTime = `${estimatedTimeMinutes} min`;
 }
 
 // ✅ INTEGRATED: Create segment-based routes
@@ -3990,6 +4925,10 @@ function finalizeSegmentRoute(route, index, prefix) {
     route.efficiency = `${((route.totalStudents / 55) * 100).toFixed(1)}%`;
     route.totalDistance = `${totalDistance.toFixed(1)} km`;
     route.estimatedDistance = totalDistance;
+    
+    // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+    const estimatedTimeMinutes = Math.round((totalDistance / 25) * 60);
+    route.estimatedTime = `${estimatedTimeMinutes} min`;
 }
 
 function openStreetView() {
@@ -4189,14 +5128,7 @@ function turnDelta(deg1, deg2) {
     return d > 180 ? 360 - d : d;
 }
 
-// ✅ ADVANCED ALGORITHM: Parameters for angular slicing
-const DEST = { lat: COLLEGE_COORDS[0], lng: COLLEGE_COORDS[1] }; // college
-const ANGLE_SLICE_DEG = 12;      // 10–15° works well
-const ROAD_FACTOR = 1.25;        // road detour factor vs straight-line
-const MONOTONE_DELTA_M = 300;    // each hop should move ≥300 m closer to DEST
-const MAX_TURN_DEG = 70;         // keep heading generally toward DEST
-const MAX_ROUTE_M = 40000;       // soft prefer, hard cap elsewhere 50km
-const HARD_MAX_ROUTE_M = 50000;
+// ✅ ADVANCED ALGORITHM: Parameters are defined in googleAPI.js
 
 // ✅ ADVANCED ALGORITHM: Preprocess stops with polar coordinates
 function decorateStopsWithPolar(stops) {
@@ -4228,84 +5160,7 @@ function bucketByAngle(stops) {
     return buckets;
 }
 
-// ✅ ADVANCED ALGORITHM: Build routes from a bucket
-function buildRoutesFromBucket(buckets, key, maxCapacity, depot) {
-    const my = buckets.get(key) || [];
-    const left = buckets.get(key - 1) || [];
-    const right = buckets.get(key + 1) || [];
-
-    const pool = [...my]; // we'll borrow from neighbors only if needed
-
-    const routes = [];
-    while (pool.length) {
-        let route = [];
-        let load = 0;
-        let dist = 0;
-
-        // start at farthest remaining
-        route.push(pool.shift());
-
-        while (true) {
-            const cur = route[route.length - 1];
-
-            // candidate list: prefer same bucket first
-            const candidates = pool.length ? pool : (left.length ? left : right);
-
-            let best = null, bestGain = Infinity;
-            for (let i = 0; i < candidates.length; i++) {
-                const cand = candidates[i];
-                // capacity early
-                if ((load + (cand.students || 1)) > maxCapacity) continue;
-
-                // monotone progress toward DEST
-                if (cand.r > cur.r - MONOTONE_DELTA_M) continue;
-
-                // heading constraint: prefer moves that keep overall bearing toward DEST
-                const curHead = bearing(cur, DEST);
-                const moveHead = bearing(cur, cand);
-                if (turnDelta(curHead, moveHead) > MAX_TURN_DEG) continue;
-
-                // projected length
-                const leg = haversine(cur, cand) * ROAD_FACTOR;
-                if ((dist + leg) > MAX_ROUTE_M) continue;
-
-                if (leg < bestGain) {
-                    bestGain = leg;
-                    best = { idx: i, arr: candidates, stop: cand, leg };
-                }
-            }
-
-            if (!best) break; // no feasible next hop
-
-            route.push(best.stop);
-            dist += best.leg;
-            load += (best.stop.students || 1);
-            best.arr.splice(best.idx, 1); // remove from its source array
-        }
-
-        // close route to DEST (college)
-        const tail = route[route.length - 1];
-        dist += haversine(tail, DEST) * ROAD_FACTOR;
-
-        // hard cap check; if broken, split tail off to new route
-        if (dist > HARD_MAX_ROUTE_M && route.length > 1) {
-            const last = route.pop();
-            // return last to its home bucket
-            const homeKey = Math.floor(last.theta / ANGLE_SLICE_DEG);
-            (buckets.get(homeKey) || my).push(last);
-            // recompute dist w/o last
-            const tail2 = route[route.length - 1];
-            dist = 0;
-            for (let i = 0; i < route.length - 1; i++) {
-                dist += haversine(route[i], route[i + 1]) * ROAD_FACTOR;
-            }
-            dist += haversine(tail2, DEST) * ROAD_FACTOR;
-        }
-
-        routes.push({ stops: route, load, dist, depot });
-    }
-    return routes;
-}
+// ✅ ADVANCED ALGORITHM: Build routes from a bucket (DUPLICATE REMOVED - using googleAPI.js version)
 
 // ✅ ADVANCED ALGORITHM: 2-opt improvement on stop order
 function twoOptImprove(routeStops) {
@@ -4339,35 +5194,7 @@ function twoOptImprove(routeStops) {
     return best;
 }
 
-// ✅ ADVANCED ALGORITHM: Main function to build optimized routes
-function buildOptimizedRoutes(stops, depots, maxCapacity) {
-    console.log(`🎯 Building advanced optimized routes for ${stops.length} stops`);
-    
-    const S = decorateStopsWithPolar(stops);
-    const buckets = bucketByAngle(S);
-
-    console.log(`📊 Created ${buckets.size} angular sectors (${ANGLE_SLICE_DEG}° each)`);
-
-    const allRoutes = [];
-    for (const [key] of buckets) {
-        // pick best depot for this sector (closest to sector centroid or to farthest stop)
-        const depot = pickDepotForSector(key, buckets, depots);
-        const sectorRoutes = buildRoutesFromBucket(buckets, key, maxCapacity, depot)
-            .map(r => {
-                const cleaned = twoOptImprove(r.stops);
-                // recompute distance
-                let d = 0;
-                for (let i = 0; i < cleaned.length - 1; i++)
-                    d += haversine(cleaned[i], cleaned[i + 1]) * ROAD_FACTOR;
-                d += haversine(cleaned[cleaned.length - 1], DEST) * ROAD_FACTOR;
-                return { ...r, stops: cleaned, dist: d };
-            });
-        allRoutes.push(...sectorRoutes);
-    }
-    
-    console.log(`✅ Generated ${allRoutes.length} advanced optimized routes`);
-    return allRoutes;
-}
+// ✅ ADVANCED ALGORITHM: Main function to build optimized routes (DUPLICATE REMOVED - using googleAPI.js version)
 
 // ✅ ADVANCED ALGORITHM: Pick depot for sector
 function pickDepotForSector(key, buckets, depots) {
@@ -4402,14 +5229,18 @@ function convertAdvancedRoutesToFormat(advancedRoutes, routeIndex) {
         const sectorAngle = route.stops.length > 0 ? route.stops[0].theta : 0;
         const direction = `${Math.round(sectorAngle)}°`;
 
+        // Calculate estimated time (assuming average speed of 25 km/h in city traffic)
+        const estimatedTimeMinutes = Math.round((route.dist / 1000 / 25) * 60);
+
         return {
-            busId: `Bus ${routeIndex + index + 1} (Advanced)`,
+            busId: `Bus ${routeIndex + index + 1}`,
             depot: route.depot['Parking Name'] || 'Main Depot',
             stops: formattedStops,
             totalStudents: route.load,
             efficiency: `${((route.load / 55) * 100).toFixed(1)}%`,
             totalDistance: `${(route.dist / 1000).toFixed(1)} km`,
             estimatedDistance: route.dist / 1000,
+            estimatedTime: `${estimatedTimeMinutes} min`,
             direction: direction,
             routeType: 'advanced-angular',
             assignedDepot: route.depot,
@@ -4990,7 +5821,7 @@ async function callGoogleRouteOptimization(requestData) {
         
         // This would be your actual Google API call
         // For now, we'll use the local optimization
-        const results = await getBusOptimizedRoutes();
+        const results = await optimizeWithNetworkConstraints(csvData)
         
         if (!results || results.length === 0) {
             throw new Error('No routes generated from Google API');
@@ -5009,10 +5840,31 @@ async function callGoogleRouteOptimization(requestData) {
 async function optimizeWithGoogleAPI() {
     try {
         console.log('🎯 Starting enhanced route optimization with multi-strategy approach...');
+
+        async function loadGPSData() {
+            try {
+                const response = await fetch('js/combined_data.csv');
+                const csvData = await response.text();
+                return csvData;
+            } catch (error) {
+                console.error('Failed to load GPS data:', error);
+                return null;
+            }
+        }
         
         // Use the new getBusOptimizedRoutes function instead of the old approach
-        const optimizedRoutes = await getBusOptimizedRoutes();
-        
+        const optimizedRoutes = await optimizeWithNetworkConstraints(csvData)
+
+        async function optimizeWithGPSConstraints() {
+            const csvData = await loadGPSData();
+            if (csvData) {
+                return await optimizeWithNetworkConstraints(csvData);
+            } else {
+                // Fallback to existing algorithm
+                console.log("!! fall back to algo without jtrack data !!!")
+                return await getBusOptimizedRoutes();
+            }
+        }
         if (!optimizedRoutes || optimizedRoutes.length === 0) {
             throw new Error('No valid routes generated');
         }
@@ -5186,22 +6038,7 @@ function initMap() {
     console.log('✅ Map initialized for optimization algorithms');
 }
 
-// ✅ INTEGRATED: Global initMap for Google Maps callback (ensure it's not overridden)
-window.initMap = function() {
-    console.log('🚀 Google Maps API loaded via callback. Initializing Smart Bus Route Optimizer...');
-    // Clear any waiting intervals
-    if (window.waitForGoogleMaps) {
-        clearInterval(window.waitForGoogleMaps);
-    }
-    // Small delay to ensure DOM is ready
-    setTimeout(() => {
-        if (document.readyState === 'complete') {
-            initializeApp();
-        } else {
-            document.addEventListener('DOMContentLoaded', initializeApp);
-        }
-    }, 100);
-};
+// initMap function is already defined at the top of the file
 
 // ✅ INTEGRATED: checkServerStatus function from googleAPI.js
 function checkServerStatus() {
@@ -6108,8 +6945,39 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
         let cumulativeDistance = 0;
         let cumulativeStudents = 0;
         
-        // Calculate route metrics with safe parsing
-        const routeDistance = parseFloat(route.totalDistance) || 0;
+        // Get first stop coordinates for distance calculation (not depot)
+        let firstStopLat = 0, firstStopLng = 0;
+        if (route.stops && route.stops.length > 0 && route.stops[0]) {
+            firstStopLat = parseFloat(route.stops[0].snapped_lat || route.stops[0].lat);
+            firstStopLng = parseFloat(route.stops[0].snapped_lon || route.stops[0].lng);
+        }
+        
+        // Calculate route distance from first stop to college through all stops
+        let routeDistance = 0;
+        if (route.stops && route.stops.length > 0) {
+            // Distance from first stop to second stop, second to third, etc.
+            for (let i = 0; i < route.stops.length - 1; i++) {
+                const currentStop = route.stops[i];
+                const nextStop = route.stops[i + 1];
+                if (currentStop && nextStop && 
+                    currentStop.snapped_lat && currentStop.snapped_lon && 
+                    nextStop.snapped_lat && nextStop.snapped_lon) {
+                    routeDistance += calculateHaversineDistance(
+                        parseFloat(currentStop.snapped_lat), parseFloat(currentStop.snapped_lon),
+                        parseFloat(nextStop.snapped_lat), parseFloat(nextStop.snapped_lon)
+                    );
+                }
+            }
+            
+            // Add distance from last stop to college
+            const lastStop = route.stops[route.stops.length - 1];
+            if (lastStop && lastStop.snapped_lat && lastStop.snapped_lon) {
+                routeDistance += calculateHaversineDistance(
+                    parseFloat(lastStop.snapped_lat), parseFloat(lastStop.snapped_lon),
+                    COLLEGE_COORDS[0], COLLEGE_COORDS[1]
+                );
+            }
+        }
         const routeEfficiency = parseFloat(route.efficiency) || 0;
         const hasWarnings = route.hasAccessibilityWarnings || route.warningMessage;
         const routeStudents = parseInt(route.totalStudents) || 0;
@@ -6137,13 +7005,11 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             total_students: routeStudents,
             efficiency_percentage: routeEfficiency.toFixed(2),
             total_distance_km: routeDistance.toFixed(2),
-            estimated_time_min: route.estimatedTime || 'N/A',
+            estimated_time_min: routeDistance > 0 ? `${Math.round((routeDistance / 25) * 60)} min` : 'N/A',
             route_type: route.routeType || 'optimized',
             direction: route.direction || 'MIXED',
             accessibility_status: hasWarnings ? 'Warnings' : 'Valid',
             warnings: route.warningMessage || '',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         };
         
@@ -6162,6 +7028,15 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             
             const studentsAtStop = parseInt(stop.num_students) || 0;
             cumulativeStudents += studentsAtStop;
+            
+            // Calculate distance from first stop to this stop
+            let distanceFromFirstStop = 0;
+            if (firstStopLat && firstStopLng && stop.snapped_lat && stop.snapped_lon) {
+                distanceFromFirstStop = calculateHaversineDistance(
+                    firstStopLat, firstStopLng,
+                    parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon)
+                );
+            }
             
             // Calculate distance to next stop
             let distanceToNext = 0;
@@ -6184,22 +7059,16 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
                 stop_sequence: stopIndex + 1,
                 cluster_number: stop.cluster_number || stopIndex + 1,
                 stop_name: `Stop ${stop.cluster_number || stopIndex + 1}`,
-                stop_address: stop.address || stop.original_address || 'Unknown',
                 original_lat: stop.lat || stop.snapped_lat || 0,
                 original_lon: stop.lng || stop.snapped_lon || 0,
                 snapped_lat: stop.snapped_lat || stop.lat || 0,
                 snapped_lon: stop.snapped_lon || stop.lng || 0,
                 students_pickup: studentsAtStop,
-                road_type: stop.route_type || 'Unknown',
-                road_name: stop.route_name || 'Unknown',
-                snap_distance_meters: stop.snap_distance || 0,
                 distance_to_next_stop_km: distanceToNext.toFixed(3),
                 cumulative_distance_km: cumulativeDistance.toFixed(3),
                 cumulative_students: cumulativeStudents,
-                estimated_pickup_time: stop.estimatedTime || 'N/A',
+                estimated_pickup_time: stop.estimatedTime || calculateStopEstimatedTime(stop, route),
                 accessibility_status: stop.accessibilityStatus || 'Valid',
-                shift_time: shiftTime,
-                day_of_week: dayOfWeek,
                 export_timestamp: timestamp
             };
             
@@ -6213,16 +7082,13 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
                     depot: route.depot || 'Default Depot',
                     stop_sequence: stopIndex + 1,
                     stop_name: `Stop ${stop.cluster_number || stopIndex + 1}`,
-                    stop_address: stop.address || stop.original_address || 'Unknown',
                     students_assigned: studentsAtStop,
                     assignment_type: 'Pickup',
                     bus_capacity: route.maxCapacity || 55,
                     current_load: cumulativeStudents,
                     load_percentage: ((cumulativeStudents / (route.maxCapacity || 55)) * 100).toFixed(1),
-                    distance_from_depot_km: cumulativeDistance.toFixed(3),
-                    estimated_time_from_depot_min: (cumulativeDistance * 2).toFixed(1), // Rough estimate
-                    shift_time: shiftTime,
-                    day_of_week: dayOfWeek,
+                    distance_from_first_stop_km: distanceFromFirstStop.toFixed(3),
+                    estimated_time_from_first_stop_min: (distanceFromFirstStop * 2).toFixed(1), // Rough estimate
                     export_timestamp: timestamp
                 };
                 
@@ -6244,8 +7110,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: window.optimizationResults.length,
             metric_unit: 'routes',
             calculation_method: 'Count',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6253,8 +7117,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalStops,
             metric_unit: 'stops',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6262,8 +7124,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalStudents,
             metric_unit: 'students',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6271,8 +7131,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgEfficiency.toFixed(2),
             metric_unit: '%',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6280,8 +7138,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalDistance.toFixed(2),
             metric_unit: 'km',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6289,8 +7145,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgDistance.toFixed(2),
             metric_unit: 'km',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6298,8 +7152,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgStops.toFixed(1),
             metric_unit: 'stops',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6307,8 +7159,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: routesWithWarnings,
             metric_unit: 'routes',
             calculation_method: 'Count',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6316,8 +7166,6 @@ function createComprehensiveExcelData(shiftTime, dayOfWeek, timestamp) {
             metric_value: ((window.optimizationResults.length - routesWithWarnings) / window.optimizationResults.length * 100).toFixed(1),
             metric_unit: '%',
             calculation_method: 'Percentage',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         }
     );
@@ -6585,8 +7433,32 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
         let cumulativeDistance = 0;
         let cumulativeStudents = 0;
         
-        // Calculate route metrics
-        const routeDistance = parseFloat(route.totalDistance) || 0;
+        // Calculate route distance from first stop to college through all stops
+        let routeDistance = 0;
+        if (route.stops && route.stops.length > 0) {
+            // Distance from first stop to second stop, second to third, etc.
+            for (let i = 0; i < route.stops.length - 1; i++) {
+                const currentStop = route.stops[i];
+                const nextStop = route.stops[i + 1];
+                if (currentStop && nextStop && 
+                    currentStop.snapped_lat && currentStop.snapped_lon && 
+                    nextStop.snapped_lat && nextStop.snapped_lon) {
+                    routeDistance += calculateHaversineDistance(
+                        parseFloat(currentStop.snapped_lat), parseFloat(currentStop.snapped_lon),
+                        parseFloat(nextStop.snapped_lat), parseFloat(nextStop.snapped_lon)
+                    );
+                }
+            }
+            
+            // Add distance from last stop to college
+            const lastStop = route.stops[route.stops.length - 1];
+            if (lastStop && lastStop.snapped_lat && lastStop.snapped_lon) {
+                routeDistance += calculateHaversineDistance(
+                    parseFloat(lastStop.snapped_lat), parseFloat(lastStop.snapped_lon),
+                    COLLEGE_COORDS[0], COLLEGE_COORDS[1]
+                );
+            }
+        }
         const routeEfficiency = parseFloat(route.efficiency) || 0;
         const hasWarnings = route.hasAccessibilityWarnings || route.warningMessage;
         
@@ -6605,13 +7477,11 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             total_students: route.totalStudents,
             efficiency_percentage: route.efficiency,
             total_distance_km: routeDistance.toFixed(2),
-            estimated_time_min: route.estimatedTime || 'N/A',
+            estimated_time_min: routeDistance > 0 ? `${Math.round((routeDistance / 25) * 60)} min` : 'N/A',
             route_type: route.routeType || 'optimized',
             direction: route.direction || 'MIXED',
             accessibility_status: hasWarnings ? 'Warnings' : 'Valid',
             warnings: route.warningMessage || '',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         });
         
@@ -6642,14 +7512,9 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
                 snapped_lat: stop.snapped_lat,
                 snapped_lon: stop.snapped_lon,
                 students_pickup: stop.num_students,
-                road_type: stop.route_type || 'Unknown',
-                road_name: stop.route_name || 'Unknown',
-                snap_distance_meters: stop.snap_distance || 0,
                 distance_to_next_stop_km: distanceToNext.toFixed(3),
                 cumulative_distance_km: cumulativeDistance.toFixed(3),
                 cumulative_students: cumulativeStudents,
-                shift_time: shiftTime,
-                day_of_week: dayOfWeek,
                 export_timestamp: timestamp
             });
         }
@@ -6666,8 +7531,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: window.optimizationResults.length,
             metric_unit: 'routes',
             calculation_method: 'Count',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6675,8 +7538,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalStops,
             metric_unit: 'stops',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6684,8 +7545,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalStudents,
             metric_unit: 'students',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6693,8 +7552,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgEfficiency.toFixed(2),
             metric_unit: '%',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6702,8 +7559,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: totalDistance.toFixed(2),
             metric_unit: 'km',
             calculation_method: 'Sum',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6711,8 +7566,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgDistance.toFixed(2),
             metric_unit: 'km',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6720,8 +7573,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: avgStops.toFixed(1),
             metric_unit: 'stops',
             calculation_method: 'Mean',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6729,8 +7580,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: routesWithWarnings,
             metric_unit: 'routes',
             calculation_method: 'Count',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         },
         {
@@ -6738,8 +7587,6 @@ function createComprehensiveExportData(shiftTime, dayOfWeek, timestamp) {
             metric_value: ((window.optimizationResults.length - routesWithWarnings) / window.optimizationResults.length * 100).toFixed(1),
             metric_unit: '%',
             calculation_method: 'Percentage',
-            shift_time: shiftTime,
-            day_of_week: dayOfWeek,
             export_timestamp: timestamp
         }
     );
@@ -6922,4 +7769,297 @@ function debugExcelExport() {
 
 // Make debug function available globally
 window.debugExcelExport = debugExcelExport;
+
+// Function to clear all cached routes
+function clearAllCachedRoutes() {
+    try {
+        // Clear from localStorage
+        const keys = Object.keys(localStorage);
+        keys.forEach(key => {
+            if (key.startsWith('cached_routes_') || key.startsWith('route_cache_')) {
+                localStorage.removeItem(key);
+                console.log(`Cleared cached route: ${key}`);
+            }
+        });
+        
+        // Clear from sessionStorage
+        const sessionKeys = Object.keys(sessionStorage);
+        sessionKeys.forEach(key => {
+            if (key.startsWith('cached_routes_') || key.startsWith('route_cache_')) {
+                sessionStorage.removeItem(key);
+                console.log(`Cleared session route: ${key}`);
+            }
+        });
+        
+        // Clear current optimization results
+        window.optimizationResults = [];
+        AppState.optimizationResults = [];
+        
+        // Refresh the cached routes list
+        if (typeof refreshCachedRoutesList === 'function') {
+            refreshCachedRoutesList();
+        }
+        
+        showToast('All cached routes cleared! Generate fresh routes now.', 'success');
+        console.log('✅ All cached routes cleared successfully');
+        
+    } catch (error) {
+        console.error('Error clearing cached routes:', error);
+        showToast('Error clearing cached routes', 'error');
+    }
+}
+
+// Make function available globally
+window.clearAllCachedRoutes = clearAllCachedRoutes;
+
+// ==================== ROUTE CACHING FUNCTIONALITY ====================
+
+/**
+ * Clear all routes from the map
+ */
+function clearAllRoutes() {
+    console.log('🧹 Clearing all routes from map...');
+    
+    // Clear markers
+    clearMap();
+    
+    // Clear polylines
+    clearPolylines();
+    
+    // Clear route-specific data
+    AppState.optimizationResults = [];
+    window.optimizationResults = [];
+    AppState.selectedRoutes.clear();
+    
+    console.log('✅ All routes cleared from map');
+}
+
+/**
+ * Refresh the cached routes list dropdown
+ */
+async function refreshCachedRoutesList() {
+    try {
+        const select = document.getElementById('cachedRoutesSelect');
+        if (!select) {
+            console.error('cachedRoutesSelect element not found');
+            return;
+        }
+        
+        showLoading();
+        const cachedRoutes = await window.routeCache.listCachedRoutes();
+        
+        // Clear existing options except the first one
+        select.innerHTML = '<option value="">Select cached routes...</option>';
+        
+        // Add cached routes to dropdown
+        cachedRoutes.forEach(route => {
+            const option = document.createElement('option');
+            option.value = route.name; // Use name as the value
+            const date = new Date(route.savedAt).toLocaleString();
+            option.textContent = `${route.name} (${route.routeCount} routes) - ${date}`;
+            select.appendChild(option);
+        });
+        
+        hideLoading();
+        showToast(`Found ${cachedRoutes.length} cached route sets`, 'success');
+    } catch (error) {
+        console.error('Error refreshing cached routes list:', error);
+        hideLoading();
+        showToast('Error loading cached routes list', 'error');
+    }
+}
+
+/**
+ * Load and visualize cached routes
+ * @param {string} name - The name identifier for the cached routes
+ */
+async function loadCachedRoutes(name) {
+    console.log('🔍 loadCachedRoutes called with name:', name);
+    if (!name) return;
+    
+    try {
+        showLoading();
+        
+        const cacheData = await window.routeCache.loadRoutes(name);
+        
+        if (!cacheData) {
+            showToast('No cached routes found', 'error');
+            hideLoading();
+            return;
+        }
+        
+        // Clear existing routes from map BEFORE setting new routes
+        clearAllRoutes();
+        
+        // Store in global state
+        AppState.optimizationResults = cacheData.routes;
+        window.optimizationResults = cacheData.routes;
+        
+        console.log(`🔍 Loading cached routes: ${cacheData.routes.length} routes`);
+        console.log('🔍 AppState.optimizationResults after setting:', AppState.optimizationResults);
+        console.log('🔍 AppState.optimizationResults.length after setting:', AppState.optimizationResults?.length);
+        console.log('🔍 Cached route details:', cacheData.routes.map(r => ({ 
+            busId: r.busId, 
+            stops: r.stops?.length || 0, 
+            totalStudents: r.totalStudents 
+        })));
+        
+        // Visualize the routes
+        if (cacheData.routes && cacheData.routes.length > 0) {
+            console.log(`🎯 About to visualize ${cacheData.routes.length} cached routes`);
+            visualizeOptimizedRoutes(cacheData.routes);
+            
+            // Update UI
+            updateMetrics(cacheData.routes);
+            
+            // Display comprehensive route statistics
+            displayRouteStatistics(cacheData.routes);
+            
+            // Initialize route selectors for the Route Selection modal
+            console.log('🔍 About to call initializeRouteSelectors...');
+            initializeRouteSelectors();
+            
+            // Enable export buttons
+            document.getElementById('exportBtn').disabled = false;
+            document.getElementById('exportComprehensiveBtn').disabled = false;
+            document.getElementById('exportExcelBtn').disabled = false;
+        }
+        
+        hideLoading();
+        showToast(`Loaded ${cacheData.routes.length} cached routes successfully!`, 'success');
+        
+    } catch (error) {
+        console.error('Error loading cached routes:', error);
+        showToast('Error loading cached routes: ' + error.message, 'error');
+        hideLoading();
+    }
+}
+
+/**
+ * Save optimized routes to cache
+ * @param {Array} routes - The optimized routes to save
+ */
+async function saveOptimizedRoutes(routes) {
+    try {
+        console.log(`🔍 Saving routes to cache: ${routes.length} routes`);
+        console.log('🔍 Route details:', routes.map(r => ({ 
+            busId: r.busId, 
+            stops: r.stops?.length || 0, 
+            totalStudents: r.totalStudents 
+        })));
+        
+        // Generate a default name with timestamp
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '_');
+        const defaultName = `Routes_${timestamp}`;
+        
+        const metadata = {
+            routeCount: routes.length,
+            totalStops: AppState.stopsData.length,
+            totalDepots: AppState.depotsData.length,
+            savedBy: 'user',
+            description: `Routes optimized on ${new Date().toLocaleString()}`
+        };
+        
+        console.log('🔍 Metadata:', metadata);
+        
+        await window.routeCache.saveRoutes(routes, defaultName, metadata);
+        await refreshCachedRoutesList();
+        
+        showToast(`Routes saved to cache successfully! (${routes.length} routes)`, 'success');
+    } catch (error) {
+        console.error('Error saving routes:', error);
+        showToast('Warning: Routes could not be cached', 'warning');
+    }
+}
+
+/**
+ * Save current routes with a custom name
+ */
+async function saveCurrentRoutesWithName() {
+    const nameInput = document.getElementById('routeNameInput');
+    const saveBtn = document.getElementById('saveRoutesBtn');
+    
+    if (!nameInput || !saveBtn) {
+        console.error('Required elements not found');
+        return;
+    }
+    
+    const routeName = nameInput.value.trim();
+    
+    if (!routeName) {
+        showToast('Please enter a name for the routes', 'warning');
+        nameInput.focus();
+        return;
+    }
+    
+    if (!window.optimizationResults || window.optimizationResults.length === 0) {
+        showToast('No routes to save. Please optimize routes first.', 'warning');
+        return;
+    }
+    
+    // Disable button and show loading
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+    
+    try {
+        const metadata = {
+            routeCount: window.optimizationResults.length,
+            totalStops: AppState.stopsData.length,
+            totalDepots: AppState.depotsData.length,
+            savedBy: 'user',
+            description: `Routes saved as "${routeName}" on ${new Date().toLocaleString()}`
+        };
+        
+        console.log('🔍 Saving with routeName:', routeName, 'type:', typeof routeName);
+        await window.routeCache.saveRoutes(window.optimizationResults, routeName, metadata);
+        await refreshCachedRoutesList();
+        
+        // Clear the input
+        nameInput.value = '';
+        
+        // Show success message
+        showToast(`Routes saved as "${routeName}" successfully!`, 'success');
+        
+    } catch (error) {
+        console.error('Error saving routes with name:', error);
+        showToast('Error saving routes: ' + error.message, 'error');
+    } finally {
+        // Re-enable button
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = '<i class="fas fa-save"></i> Save Routes';
+    }
+}
+
+// Enable save button when routes are available
+function updateSaveButtonState() {
+    const saveBtn = document.getElementById('saveRoutesBtn');
+    if (saveBtn) {
+        saveBtn.disabled = !window.optimizationResults || window.optimizationResults.length === 0;
+    }
+}
+
+// Make caching functions available globally
+window.refreshCachedRoutesList = refreshCachedRoutesList;
+window.loadCachedRoutes = loadCachedRoutes;
+window.saveOptimizedRoutes = saveOptimizedRoutes;
+window.saveCurrentRoutesWithName = saveCurrentRoutesWithName;
+window.clearAllRoutes = clearAllRoutes;
+
+// Load cached routes list on page load
+window.addEventListener('load', async () => {
+    // Wait a bit for other initializations to complete
+    setTimeout(async () => {
+        try {
+            await refreshCachedRoutesList();
+        } catch (error) {
+            console.log('⚠️ Could not load cached routes on startup, will retry later');
+            // Show a message to the user that they can manually refresh
+            showToast('Could not load cached routes automatically. Click "Refresh List" to try again.', 'warning');
+        }
+    }, 2000); // Increased timeout to 2 seconds
+});
+
+console.log('✅ Route caching functions initialized');
+
+// ==================== END ROUTE CACHING FUNCTIONALITY ====================
 

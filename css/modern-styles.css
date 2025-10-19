@@ -277,6 +277,126 @@ body {
     color: var(--text-primary);
 }
 
+/* Route Search Styles */
+.route-search-container {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-primary);
+}
+
+.search-input-wrapper {
+    position: relative;
+    margin-bottom: 0.5rem;
+}
+
+.search-input-wrapper input {
+    width: 100%;
+    padding: 0.75rem 4rem 0.75rem 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-size: 0.875rem;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    transition: all 0.2s ease;
+}
+
+.search-input-wrapper input:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.search-icon {
+    position: absolute;
+    right: 0.75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    pointer-events: none;
+}
+
+.search-results-info {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-align: right;
+    margin-top: 0.25rem;
+}
+
+.search-results-info span {
+    font-weight: 600;
+    color: var(--primary-color);
+}
+
+.clear-search-btn {
+    position: absolute;
+    right: 2.5rem;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0.25rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    transition: all 0.2s ease;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.clear-search-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.search-input-wrapper input:not(:placeholder-shown) + .search-icon + .clear-search-btn {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* Search Mode Toggle */
+.search-mode-toggle {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    background: var(--bg-tertiary);
+    padding: 0.25rem;
+    border-radius: 8px;
+}
+
+.search-mode-btn {
+    flex: 1;
+    padding: 0.5rem 0.75rem;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 500;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.25rem;
+}
+
+.search-mode-btn:hover {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.search-mode-btn.active {
+    background: var(--primary-color);
+    color: white;
+    box-shadow: var(--shadow-sm);
+}
+
+.search-mode-btn i {
+    font-size: 0.75rem;
+}
+
 /* File Upload */
 .file-upload-group {
     display: flex;

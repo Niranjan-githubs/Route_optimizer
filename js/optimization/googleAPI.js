@@ -1,7 +1,257 @@
+const COLLEGE_COORDS = [13.008867898985972, 80.00353386796435];
+const DEST = { lat: COLLEGE_COORDS[0], lng: COLLEGE_COORDS[1] };
+
+// Make COLLEGE_COORDS globally available
+window.COLLEGE_COORDS = COLLEGE_COORDS;
+
+// ===== DROPPED STOPS TRACKING SYSTEM =====
+let droppedStopsTracker = {
+    allDroppedStops: [],
+    trackedStopIds: new Set(), // Global duplicate prevention
+    reasons: {
+        DISTANCE_FILTER: 'Distance from college exceeds limit',
+        CLUSTER_REJECTED: 'Cluster failed validation (bearing/straightness/backtracking)',
+        BACKTRACKING_REMOVAL: 'Removed due to sharp turns causing backtracking',
+        ROUTE_LENGTH_EXCEEDED: 'Route exceeded maximum distance limit',
+        NETWORK_SNAP_FAILED: 'Could not snap to bus network',
+        UNASSIGNED: 'Not assigned to any route',
+        SALVAGE_FAILED: 'Could not be salvaged into a route',
+        CAPACITY_EXCEEDED: 'Exceeded bus capacity limits',
+        INVALID_COORDINATES: 'Invalid or missing coordinates',
+        MONOTONE_VIOLATION: 'Violates monotone progress toward destination',
+        HEADING_VIOLATION: 'Requires too sharp a turn',
+        ROUTE_LENGTH_VIOLATION: 'Would make route too long',
+        BUCKET_UNASSIGNED: 'Remained unassigned after bucket processing'
+    }
+};
+
+// Function to add a dropped stop with reason
+function trackDroppedStop(stop, reason, additionalInfo = {}) {
+    const stopId = stop.cluster_number || stop.id || 'unknown';
+    
+    // Check if this stop has already been tracked
+    if (droppedStopsTracker.trackedStopIds.has(stopId)) {
+        console.log(`⚠️ Stop ${stopId} already tracked (${reason}), skipping duplicate`);
+        return;
+    }
+    
+    // Mark as tracked
+    droppedStopsTracker.trackedStopIds.add(stopId);
+    
+    const droppedStop = {
+        cluster_number: stopId,
+        original_lat: stop.original_lat || stop.snapped_lat,
+        original_lon: stop.original_lon || stop.snapped_lon,
+        snapped_lat: stop.snapped_lat,
+        snapped_lon: stop.snapped_lon,
+        num_students: stop.num_students || 0,
+        route_name: stop.route_name || 'unknown',
+        route_type: stop.route_type || 'unknown',
+        snap_distance_meters: stop.snap_distance_meters || 0,
+        reason: reason,
+        reason_description: droppedStopsTracker.reasons[reason] || reason,
+        additional_info: JSON.stringify(additionalInfo),
+        dropped_at: new Date().toISOString(),
+        distance_from_college_km: stop.distance_from_college_km || 
+            (stop.snapped_lat && stop.snapped_lon ? 
+                calculateHaversineDistance(COLLEGE_COORDS[0], COLLEGE_COORDS[1], 
+                    parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon)) : null)
+    };
+    
+    droppedStopsTracker.allDroppedStops.push(droppedStop);
+    console.log(`📋 Tracked dropped stop ${stopId}: ${reason}`);
+}
+
+// Function to export dropped stops as CSV
+function exportDroppedStopsAsCSV() {
+    if (droppedStopsTracker.allDroppedStops.length === 0) {
+        console.log('✅ No dropped stops to export');
+        return null;
+    }
+    
+    const headers = [
+        'cluster_number', 'original_lat', 'original_lon', 'snapped_lat', 'snapped_lon',
+        'num_students', 'route_name', 'route_type', 'snap_distance_meters',
+        'reason', 'reason_description', 'additional_info', 'dropped_at', 'distance_from_college_km'
+    ];
+    
+    const csvContent = [
+        headers.join(','),
+        ...droppedStopsTracker.allDroppedStops.map(stop => 
+            headers.map(header => {
+                const value = stop[header] || '';
+                // Escape commas and quotes in CSV
+                return typeof value === 'string' && (value.includes(',') || value.includes('"')) 
+                    ? `"${value.replace(/"/g, '""')}"` 
+                    : value;
+            }).join(',')
+        )
+    ].join('\n');
+    
+    // Create and download CSV file
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dropped_stops_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+    
+    console.log(`📊 Exported ${droppedStopsTracker.allDroppedStops.length} dropped stops to CSV`);
+    return csvContent;
+}
+
+// Function to get dropped stops summary
+function getDroppedStopsSummary() {
+    const summary = {
+        total_dropped: droppedStopsTracker.allDroppedStops.length,
+        total_students_dropped: droppedStopsTracker.allDroppedStops.reduce((sum, stop) => 
+            sum + parseInt(stop.num_students || 0), 0),
+        by_reason: {}
+    };
+    
+    // Group by reason
+    droppedStopsTracker.allDroppedStops.forEach(stop => {
+        if (!summary.by_reason[stop.reason]) {
+            summary.by_reason[stop.reason] = {
+                count: 0,
+                students: 0,
+                stops: []
+            };
+        }
+        summary.by_reason[stop.reason].count++;
+        summary.by_reason[stop.reason].students += parseInt(stop.num_students || 0);
+        summary.by_reason[stop.reason].stops.push(stop.cluster_number);
+    });
+    
+    return summary;
+}
+
+// Function to clear tracking (call at start of optimization)
+function clearDroppedStopsTracking() {
+    droppedStopsTracker.allDroppedStops = [];
+    droppedStopsTracker.trackedStopIds.clear();
+    console.log('🧹 Cleared dropped stops tracking');
+}
+
+// Post-processing outlier detection: compare input vs assigned stops
+function detectMissingStops(inputStops, assignedRoutes) {
+    console.log('🔍 POST-PROCESSING: Detecting missing stops...');
+    
+    // Get all stops that were assigned to routes
+    const assignedStopIds = new Set();
+    assignedRoutes.forEach(route => {
+        if (route.stops) {
+            route.stops.forEach(stop => {
+                assignedStopIds.add(stop.cluster_number || stop.id);
+            });
+        }
+    });
+    
+    // Find stops that were in input but not assigned to any route
+    const missingStops = inputStops.filter(stop => {
+        const stopId = stop.cluster_number || stop.id;
+        return !assignedStopIds.has(stopId);
+    });
+    
+    console.log(`📊 MISSING STOPS ANALYSIS:`);
+    console.log(`   - Input stops: ${inputStops.length}`);
+    console.log(`   - Assigned stops: ${assignedStopIds.size}`);
+    console.log(`   - Missing stops: ${missingStops.length}`);
+    
+    // Track missing stops as outliers with reason analysis
+    missingStops.forEach(stop => {
+        const stopId = stop.cluster_number || stop.id;
+        
+        // Analyze why this stop wasn't assigned
+        let reason = 'UNASSIGNED';
+        let additionalInfo = {};
+        
+        // Check distance from college
+        const distance = calculateHaversineDistance(
+            COLLEGE_COORDS[0], COLLEGE_COORDS[1],
+            parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon)
+        );
+        
+        if (distance > 40) {
+            reason = 'DISTANCE_FILTER';
+            additionalInfo = { distance_km: distance, max_allowed_km: 40 };
+        } else {
+            // Check if it's a capacity issue by looking at student count
+            const studentCount = parseInt(stop.num_students || 0);
+            if (studentCount > 50) { // Assuming max capacity per route is around 50
+                reason = 'CAPACITY_EXCEEDED';
+                additionalInfo = { 
+                    student_count: studentCount, 
+                    max_capacity_per_route: 50,
+                    note: 'Stop has too many students for single route'
+                };
+            } else {
+                reason = 'UNASSIGNED';
+                additionalInfo = { 
+                    student_count: studentCount,
+                    distance_km: distance,
+                    note: 'Could not be assigned to any route - likely optimization constraints'
+                };
+            }
+        }
+        
+        // Track the missing stop
+        trackDroppedStop(stop, reason, additionalInfo);
+    });
+    
+    return missingStops;
+}
+
+// Manual export functions (call these from browser console)
+window.exportDroppedStops = exportDroppedStopsAsCSV;
+window.exportDroppedStopsAsCSV = exportDroppedStopsAsCSV;
+window.getDroppedStopsSummary = getDroppedStopsSummary;
+window.getDroppedStopsData = () => droppedStopsTracker.allDroppedStops;
+window.trackDroppedStop = trackDroppedStop;
+window.droppedStopsTracker = droppedStopsTracker;
+window.clearDroppedStopsTracking = clearDroppedStopsTracking;
+window.detectMissingStops = detectMissingStops;
+
+// Debug: Log that functions are available
+console.log('🔧 Outlier tracking functions loaded:', {
+    exportDroppedStopsAsCSV: typeof window.exportDroppedStopsAsCSV,
+    trackDroppedStop: typeof window.trackDroppedStop,
+    droppedStopsTracker: typeof window.droppedStopsTracker
+});
+
+// Test function to verify outlier system
+window.testOutlierSystem = function() {
+    console.log('🧪 Testing outlier system...');
+    
+    // Test tracking a dummy outlier
+    const testStop = {
+        cluster_number: 'TEST_001',
+        snapped_lat: '13.008867',
+        snapped_lon: '80.003533',
+        num_students: '5'
+    };
+    
+    trackDroppedStop(testStop, 'TEST', { test: true });
+    
+    console.log('✅ Test outlier added. Total outliers:', droppedStopsTracker.allDroppedStops.length);
+    console.log('📊 Summary:', getDroppedStopsSummary());
+    
+    // Export test CSV
+    exportDroppedStopsAsCSV();
+    
+    return 'Test completed - check console and downloads';
+};
+
 // CLIENT-SIDE: Use your server proxy instead of direct API calls
 async function optimizeWithGoogleAPI() {
     try {
         console.log('🎯 Starting enhanced route optimization with multi-strategy approach...');
+        
+        // Clear previous dropped stops tracking
+        droppedStopsTracker.allDroppedStops = [];
         
         // Use the new getBusOptimizedRoutes function instead of the old approach
         const optimizedRoutes = await getBusOptimizedRoutes();
@@ -11,6 +261,14 @@ async function optimizeWithGoogleAPI() {
         }
         
         console.log(`✅ Generated ${optimizedRoutes.length} optimized routes`);
+        
+        // Export dropped stops if any
+        if (droppedStopsTracker.allDroppedStops.length > 0) {
+            const summary = getDroppedStopsSummary();
+            console.log('📊 DROPPED STOPS SUMMARY:', summary);
+            exportDroppedStopsAsCSV();
+        }
+        
         return optimizedRoutes;
         
     } catch (error) {
@@ -18,6 +276,178 @@ async function optimizeWithGoogleAPI() {
         showStatus(`⚠️ Route Optimization API failed: ${error.message}`, 'warning');
         return await simulateOptimization();
     }
+}
+
+// Function to add a dropped stop with reason (DUPLICATE REMOVED)
+
+// Function to export dropped stops as CSV
+function exportDroppedStopsAsCSV() {
+    if (droppedStopsTracker.allDroppedStops.length === 0) {
+        console.log('✅ No dropped stops to export');
+        return null;
+    }
+    
+    const headers = [
+        'cluster_number', 'original_lat', 'original_lon', 'snapped_lat', 'snapped_lon',
+        'num_students', 'route_name', 'route_type', 'snap_distance_meters',
+        'reason', 'reason_description', 'additional_info', 'dropped_at', 'distance_from_college_km'
+    ];
+    
+    const csvContent = [
+        headers.join(','),
+        ...droppedStopsTracker.allDroppedStops.map(stop => 
+            headers.map(header => {
+                const value = stop[header] || '';
+                // Escape commas and quotes in CSV
+                return typeof value === 'string' && (value.includes(',') || value.includes('"')) 
+                    ? `"${value.replace(/"/g, '""')}"` 
+                    : value;
+            }).join(',')
+        )
+    ].join('\n');
+    
+    // Create and download CSV file
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dropped_stops_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+    
+    console.log(`�� Exported ${droppedStopsTracker.allDroppedStops.length} dropped stops to CSV`);
+    return csvContent;
+}
+
+//-------DROPPED STOPS TRACKING SYSTEM -------
+
+// Function to get dropped stops summary
+function getDroppedStopsSummary() {
+    const summary = {
+        total_dropped: droppedStopsTracker.allDroppedStops.length,
+        total_students_dropped: droppedStopsTracker.allDroppedStops.reduce((sum, stop) => 
+            sum + parseInt(stop.num_students || 0), 0),
+        by_reason: {}
+    };
+    
+    // Group by reason
+    droppedStopsTracker.allDroppedStops.forEach(stop => {
+        if (!summary.by_reason[stop.reason]) {
+            summary.by_reason[stop.reason] = {
+                count: 0,
+                students: 0,
+                stops: []
+            };
+        }
+        summary.by_reason[stop.reason].count++;
+        summary.by_reason[stop.reason].students += parseInt(stop.num_students || 0);
+        summary.by_reason[stop.reason].stops.push(stop.cluster_number);
+    });
+    
+    return summary;
+}
+
+// Function to add a dropped stop with reason (DUPLICATE REMOVED)
+
+
+// Function to export dropped stops as CSV
+function exportDroppedStopsAsCSV() {
+    if (droppedStopsTracker.allDroppedStops.length === 0) {
+        console.log('✅ No dropped stops to export');
+        return null;
+    }
+    
+    const headers = [
+        'cluster_number', 'original_lat', 'original_lon', 'snapped_lat', 'snapped_lon',
+        'num_students', 'route_name', 'route_type', 'snap_distance_meters',
+        'reason', 'reason_description', 'additional_info', 'dropped_at', 'distance_from_college_km'
+    ];
+    
+    const csvContent = [
+        headers.join(','),
+        ...droppedStopsTracker.allDroppedStops.map(stop => 
+            headers.map(header => {
+                const value = stop[header] || '';
+                // Escape commas and quotes in CSV
+                return typeof value === 'string' && (value.includes(',') || value.includes('"')) 
+                    ? `"${value.replace(/"/g, '""')}"` 
+                    : value;
+            }).join(',')
+        )
+    ].join('\n');
+    
+    // Create and download CSV file
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dropped_stops_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+    
+    console.log(`�� Exported ${droppedStopsTracker.allDroppedStops.length} dropped stops to CSV`);
+    return csvContent;
+}
+
+// Function to get dropped stops summary
+function getDroppedStopsSummary() {
+    const summary = {
+        total_dropped: droppedStopsTracker.allDroppedStops.length,
+        total_students_dropped: droppedStopsTracker.allDroppedStops.reduce((sum, stop) => 
+            sum + parseInt(stop.num_students || 0), 0),
+        by_reason: {}
+    };
+    
+    // Group by reason
+    droppedStopsTracker.allDroppedStops.forEach(stop => {
+        if (!summary.by_reason[stop.reason]) {
+            summary.by_reason[stop.reason] = {
+                count: 0,
+                students: 0,
+                stops: []
+            };
+        }
+        summary.by_reason[stop.reason].count++;
+        summary.by_reason[stop.reason].students += parseInt(stop.num_students || 0);
+        summary.by_reason[stop.reason].stops.push(stop.cluster_number);
+    });
+    
+    return summary;
+}
+
+function filterStopsByDistance(stopsData, maxRadiusKm = 50) {
+    const filteredStops = [];
+    const excludedStops = [];
+    
+    stopsData.forEach(stop => {
+        // Calculate distance from college to stop
+        const distanceToStop = calculateHaversineDistance(
+            COLLEGE_COORDS[0], COLLEGE_COORDS[1],
+            parseFloat(stop.snapped_lat), parseFloat(stop.snapped_lon)
+        );
+        
+        // Only include stops within reasonable distance from college
+        if (distanceToStop <= maxRadiusKm) {
+            filteredStops.push(stop);
+        } else {
+            console.warn(`⚠️ Stop ${stop.cluster_number} too far from college (${distanceToStop.toFixed(1)}km) - Excluding`);
+            excludedStops.push(stop);
+            
+            // Track the dropped stop
+            trackDroppedStop(stop, 'DISTANCE_FILTER', {
+                distance_km: distanceToStop,
+                max_allowed_km: maxRadiusKm
+            });
+        }
+    });
+    
+    console.log(`📊 Pre-filtering: ${filteredStops.length}/${stopsData.length} stops within ${maxRadiusKm}km radius`);
+    window.excludedStops = excludedStops;
+    return filteredStops;
 }
 
 
@@ -177,7 +607,7 @@ async function processRouteOptimizationResponse(apiResponse) {
                 };
                 
                 // ✅ Simple validation
-                const validation = await validateRouteAccessibility(routeData);
+                const validation = await validateNetworkRoute(routeData);
                 
                 routeData.accessibility = {
                     isValid: validation.isValid,
@@ -212,44 +642,14 @@ async function processRouteOptimizationResponse(apiResponse) {
 }
 
 
+
 // ✅ SIMPLIFIED Route validation (basic checks only)
-async function validateRouteAccessibility(route) {
-    try {
-        const stops = route.stops;
-        if (stops.length === 0) return { isValid: true, issues: [] };
-        
-        const issues = [];
-        let isValid = true;
-        
-        // Check if route is too long
-        const distanceKm = parseFloat(route.totalDistance.replace(' km', '').replace('~', ''));
-        if (distanceKm > 60) {
-            issues.push('Route exceeds 60km limit');
-            isValid = false;
-        }
-        
-        // Check if route has too many stops (might indicate narrow roads)
-        if (stops.length > 15) {
-            issues.push('Too many stops - may have accessibility issues');
-        }
-        
-        // Check average distance between stops
-        const avgDistanceBetweenStops = distanceKm / Math.max(1, stops.length - 1);
-        if (avgDistanceBetweenStops < 1.5) {
-            issues.push('Stops very close together - possible narrow roads');
-        }
-        
-        // For now, be lenient - only fail routes with major issues
-        return {
-            isValid: issues.length <= 1,
-            issues: issues,
-            validatedDistance: distanceKm
-        };
-        
-    } catch (error) {
-        console.error('Route validation failed:', error);
-        return { isValid: true, issues: ['Validation skipped'] };
-    }
+function validateNetworkRoute(route) {
+    return {
+        isValid: route.networkValidated || false,
+        issues: route.networkValidated ? [] : ['Route not network-validated'],
+        method: 'gps-network-constrained'
+    };
 }
 
 
@@ -663,6 +1063,15 @@ function createGeographicalClusters(stops, maxCapacity) {
         } else {
             console.warn(`⚠️ Cluster ${cluster.direction} rejected - will try to salvage`);
             rejectedClusters.push(cluster);
+            
+            // Track all stops in rejected cluster
+            cluster.stops.forEach(stop => {
+                trackDroppedStop(stop, 'CLUSTER_REJECTED', {
+                    cluster_direction: cluster.direction,
+                    cluster_stops_count: cluster.stops.length,
+                    cluster_students: cluster.totalStudents
+                });
+            });
         }
     });
     
@@ -992,6 +1401,7 @@ function removeBacktrackingStops(cluster) {
     // Sort stops by distance from college
     stops.sort((a, b) => a.distance - b.distance);
     
+    
     // Identify stops that cause backtracking
     const problematicIndices = [];
     
@@ -1020,6 +1430,16 @@ function removeBacktrackingStops(cluster) {
             problematicIndices.push(i);
         }
     }
+
+    // Track problematic stops before removing them
+    problematicIndices.forEach(index => {
+        trackDroppedStop(stops[index], 'BACKTRACKING_REMOVAL', {
+            cluster_direction: cluster.direction,
+            bearing_change: Math.abs(calculateBearing(stops[index-1].lat, stops[index-1].lng, stops[index].lat, stops[index].lng) - 
+                                    calculateBearing(stops[index].lat, stops[index].lng, stops[index+1].lat, stops[index+1].lng)),
+            position_in_route: index
+        });
+    });
     
     // Remove problematic stops
     const optimizedStops = stops.filter((stop, index) => !problematicIndices.includes(index));
@@ -1369,8 +1789,22 @@ function validateRouteLength(route) {
     // Strictly enforce limits
     if (distanceKm > STRICT_MAX_DISTANCE) {
         console.warn(`⚠️ Route ${route.busId} rejected - exceeds strict ${STRICT_MAX_DISTANCE}km limit (${distanceKm.toFixed(1)}km)`);
+
+        // Track all stops in rejected route
+        if (route.stops) {
+            route.stops.forEach(stop => {
+                trackDroppedStop(stop, 'ROUTE_LENGTH_EXCEEDED', {
+                    route_id: route.busId,
+                    route_distance_km: distanceKm,
+                    max_allowed_km: STRICT_MAX_DISTANCE
+                });
+            });
+        }
+
         return false;
     }
+
+
     
     // Add warnings but still accept routes near the limit
     if (distanceKm > PREFERRED_MAX_DISTANCE) {
@@ -1694,10 +2128,10 @@ function findOptimalDepot(cluster) {
         if (bearingDiff > 180) bearingDiff = 360 - bearingDiff;
         
         // Score: prioritize direction alignment over distance
-        const directionScore = 100 - bearingDiff; // Higher score for better alignment
-        const distanceScore = Math.max(0, 50 - distanceToCluster); // Higher score for closer distance
+        const directionScore = 100 - distanceToCluster; // Higher score for better alignment
+        const distanceScore = Math.max(0, 50 - bearingDiff); // Higher score for closer distance
         
-        const totalScore = directionScore * 2 + distanceScore; // Weight direction more heavily
+        const totalScore = directionScore  + distanceScore; // Weight direction more heavily
         
         if (totalScore > bestScore) {
             bestScore = totalScore;
@@ -2410,7 +2844,7 @@ function turnDelta(deg1, deg2) {
 }
 
 // --- Parameters you can tune ---
-const DEST = { lat: COLLEGE_COORDS[0], lng: COLLEGE_COORDS[1] }; // college
+//const DEST = { lat: COLLEGE_COORDS[0], lng: COLLEGE_COORDS[1] }; // college
 const ANGLE_SLICE_DEG = 12;      // 10–15° works well
 const ROAD_FACTOR = 1.25;        // road detour factor vs straight-line
 const MONOTONE_DELTA_M = 300;    // each hop should move ≥300 m closer to DEST
@@ -2463,7 +2897,9 @@ function buildRoutesFromBucket(buckets, key, maxCapacity, depot) {
         let dist = 0;
 
         // start at farthest remaining
-        route.push(pool.shift());
+        const firstStop = pool.shift();
+        route.push(firstStop);
+        load += (firstStop.students || 1); // ✅ FIX: Add first stop's students to load
 
         while (true) {
             const cur = route[route.length - 1];
@@ -2475,19 +2911,33 @@ function buildRoutesFromBucket(buckets, key, maxCapacity, depot) {
             for (let i = 0; i < candidates.length; i++) {
                 const cand = candidates[i];
                 // capacity early
-                if ((load + (cand.students || 1)) > maxCapacity) continue;
+                if ((load + (cand.students || 1)) > maxCapacity) {
+                    continue;
+                }
 
                 // monotone progress toward DEST
-                if (cand.r > cur.r - MONOTONE_DELTA_M) continue;
+                if (cand.r > cur.r - MONOTONE_DELTA_M) {
+                    // Note: Not tracking as outlier - this is just an optimization constraint
+                    // The stop might be assigned to a different route later
+                    continue;
+                }
 
                 // heading constraint: prefer moves that keep overall bearing toward DEST
                 const curHead = bearing(cur, DEST);
                 const moveHead = bearing(cur, cand);
-                if (turnDelta(curHead, moveHead) > MAX_TURN_DEG) continue;
+                if (turnDelta(curHead, moveHead) > MAX_TURN_DEG) {
+                    // Note: Not tracking as outlier - this is just an optimization constraint
+                    // The stop might be assigned to a different route later
+                    continue;
+                }
 
                 // projected length
                 const leg = haversine(cur, cand) * ROAD_FACTOR;
-                if ((dist + leg) > MAX_ROUTE_M) continue;
+                if ((dist + leg) > MAX_ROUTE_M) {
+                    // Note: Not tracking as outlier - this is just an optimization constraint
+                    // The stop might be assigned to a different route later
+                    continue;
+                }
 
                 if (leg < bestGain) {
                     bestGain = leg;
@@ -2524,6 +2974,11 @@ function buildRoutesFromBucket(buckets, key, maxCapacity, depot) {
 
         routes.push({ stops: route, load, dist, depot });
     }
+
+    // Note: BUCKET_UNASSIGNED tracking removed - this was causing false positives
+    // because it only checked within the current bucket, not across all buckets.
+    // True unassigned stops are tracked at the global level after all processing.
+
     return routes;
 }
 
@@ -2625,7 +3080,7 @@ function convertAdvancedRoutesToFormat(advancedRoutes, routeIndex) {
             busId: `Bus ${routeIndex + index + 1} (Advanced)`,
             depot: route.depot['Parking Name'] || 'Main Depot',
             stops: formattedStops,
-            totalStudents: route.load,
+            totalStudents: formattedStops.reduce((sum, stop) => sum + parseInt(stop.num_students), 0),
             efficiency: `${((route.load / 55) * 100).toFixed(1)}%`,
             totalDistance: `${(route.dist / 1000).toFixed(1)} km`,
             estimatedDistance: route.dist / 1000,
@@ -2638,3 +3093,699 @@ function convertAdvancedRoutesToFormat(advancedRoutes, routeIndex) {
         };
     });
 }
+
+// Enhanced Bus Route Optimization with Real GPS Network Constraints
+// This builds a road network from actual bus GPS tracking data and constrains routes to it
+
+// ===== GPS NETWORK PREPROCESSING =====
+
+// Global variables for the bus network
+let busRouteNetwork = null;
+let networkNodes = new Map();
+let networkEdges = new Map();
+
+/**
+ * Load and process GPS tracking data from CSV to build bus-accessible network
+ */
+async function loadAndProcessGPSNetwork(csvData) {
+    console.log('🗺️ Building bus-accessible network from GPS data...');
+    
+    const routes = parseGPSData(csvData);
+    const network = buildRouteNetwork(routes);
+    
+    busRouteNetwork = network;
+    console.log(`✅ Built network with ${network.nodes.size} nodes and ${network.edges.size} edges`);
+    
+    return network;
+}
+
+/**
+ * Parse CSV data and group by vehicle/route
+ */
+function parseGPSData(csvData) {
+    const lines = csvData.trim().split('\n').slice(1); // Skip header
+    const routeMap = new Map();
+    
+    lines.forEach(line => {
+        const [vehicle, device, speed, distance, fuel, timestamp, lat, lng, location, scraped] = line.split(',');
+        
+        if (!lat || !lng || lat === 'latitude' || lng === 'longitude') return;
+        
+        const point = {
+            lat: parseFloat(lat),
+            lng: parseFloat(lng),
+            timestamp: new Date(timestamp),
+            speed: parseFloat(speed) || 0,
+            vehicle: vehicle
+        };
+        
+        if (isValidCoordinate(point.lat, point.lng)) {
+            if (!routeMap.has(vehicle)) {
+                routeMap.set(vehicle, []);
+            }
+            routeMap.get(vehicle).push(point);
+        }
+    });
+    
+    // Sort points by timestamp for each vehicle
+    routeMap.forEach(points => {
+        points.sort((a, b) => a.timestamp - b.timestamp);
+    });
+    
+    return routeMap;
+}
+
+/**
+ * Build a network graph from GPS routes
+ */
+function buildRouteNetwork(routeMap) {
+    const nodes = new Map();
+    const edges = new Map();
+    const SNAP_DISTANCE = 50; // meters - points within this distance are considered same node
+    
+    let nodeId = 0;
+    
+    // Process each vehicle's route
+    for (const [vehicle, points] of routeMap) {
+        console.log(`📍 Processing ${points.length} GPS points for ${vehicle}`);
+        
+        let previousNodeId = null;
+        
+        points.forEach(point => {
+            // Find or create node for this GPS point
+            const existingNodeId = findNearbyNode(point, nodes, SNAP_DISTANCE);
+            let currentNodeId;
+            
+            if (existingNodeId !== null) {
+                currentNodeId = existingNodeId;
+                // Update node with additional data
+                const node = nodes.get(currentNodeId);
+                node.visits++;
+                node.vehicles.add(vehicle);
+            } else {
+                currentNodeId = nodeId++;
+                nodes.set(currentNodeId, {
+                    id: currentNodeId,
+                    lat: point.lat,
+                    lng: point.lng,
+                    visits: 1,
+                    vehicles: new Set([vehicle])
+                });
+            }
+            
+            // Create edge from previous node if exists
+            if (previousNodeId !== null && previousNodeId !== currentNodeId) {
+                const edgeKey = `${previousNodeId}-${currentNodeId}`;
+                const reverseKey = `${currentNodeId}-${previousNodeId}`;
+                
+                if (!edges.has(edgeKey) && !edges.has(reverseKey)) {
+                    const prevNode = nodes.get(previousNodeId);
+                    const currNode = nodes.get(currentNodeId);
+                    const distance = haversine(prevNode, currNode);
+                    
+                    // Only add edge if distance is reasonable (not GPS jumps)
+                    if (distance < 5000) { // 5km max edge length
+                        edges.set(edgeKey, {
+                            from: previousNodeId,
+                            to: currentNodeId,
+                            distance: distance,
+                            vehicles: new Set([vehicle]),
+                            bidirectional: false
+                        });
+                        
+                        // Make it bidirectional
+                        edges.set(reverseKey, {
+                            from: currentNodeId,
+                            to: previousNodeId,
+                            distance: distance,
+                            vehicles: new Set([vehicle]),
+                            bidirectional: false
+                        });
+                    }
+                }
+            }
+            
+            previousNodeId = currentNodeId;
+        });
+    }
+    
+    // Filter nodes and edges by frequency (remove noise)
+    const filteredNodes = new Map();
+    const filteredEdges = new Map();
+    
+    // Keep nodes visited by multiple vehicles OR multiple times
+    nodes.forEach((node, id) => {
+        if (node.visits >= 2 || node.vehicles.size >= 1) {
+            filteredNodes.set(id, node);
+        }
+    });
+    
+    // Keep edges between filtered nodes
+    edges.forEach((edge, key) => {
+        if (filteredNodes.has(edge.from) && filteredNodes.has(edge.to)) {
+            filteredEdges.set(key, edge);
+        }
+    });
+    
+    console.log(`🔍 Filtered to ${filteredNodes.size} nodes and ${filteredEdges.size} edges`);
+    
+    return {
+        nodes: filteredNodes,
+        edges: filteredEdges,
+        adjacencyList: buildAdjacencyList(filteredNodes, filteredEdges)
+    };
+}
+
+/**
+ * Find nearby node within snap distance
+ */
+function findNearbyNode(point, nodes, snapDistance) {
+    for (const [nodeId, node] of nodes) {
+        const distance = haversine(point, node);
+        if (distance <= snapDistance) {
+            return nodeId;
+        }
+    }
+    return null;
+}
+
+/**
+ * Build adjacency list for pathfinding
+ */
+function buildAdjacencyList(nodes, edges) {
+    const adjacencyList = new Map();
+    
+    // Initialize empty lists
+    nodes.forEach((_, nodeId) => {
+        adjacencyList.set(nodeId, []);
+    });
+    
+    // Add edges
+    edges.forEach(edge => {
+        adjacencyList.get(edge.from).push({
+            to: edge.to,
+            distance: edge.distance
+        });
+    });
+    
+    return adjacencyList;
+}
+
+// ===== NETWORK-CONSTRAINED ROUTE OPTIMIZATION =====
+
+/**
+ * Enhanced route optimization that uses bus network constraints
+ */
+async function getBusOptimizedRoutesWithNetwork(csvData) {
+    try {
+        // Load the GPS network if not already loaded
+        if (!busRouteNetwork) {
+            await loadAndProcessGPSNetwork(csvData);
+        }
+        
+        const filteredStops = filterStopsByDistance(stopsData, 40);
+        const maxCapacity = parseInt(document.getElementById('maxCapacity').value) || 55;
+        
+        console.log(`🚌 Starting network-constrained optimization for ${filteredStops.length} stops`);
+        
+        // Snap stops to network nodes
+        //const networkSnappedStops = snapStopsToNetwork(filteredStops);
+        //console.log(`📍 Snapped ${networkSnappedStops.length} stops to bus network`);
+        
+        // Build routes using network constraints
+        const networkRoutes = buildNetworkConstrainedRoutes(filteredStops, maxCapacity);
+        
+        console.log(`✅ Generated ${networkRoutes.length} network-constrained routes`);
+
+        // ✅ FINAL: Track unserved stops
+        const {
+            servingRoutes,
+            servedStops,
+            servedStudents,
+            duplicateStops,
+            unservedStops
+        } = analyzeRouteCoverage(allRoutes, filteredStops);
+
+        // Track unserved stops
+        unservedStops.forEach(stop => {
+            trackDroppedStop(stop, 'UNASSIGNED', {
+                total_routes_generated: allRoutes.length,
+                total_stops_served: servedStops.length
+            });
+        });
+
+        // Export dropped stops summary
+        const summary = getDroppedStopsSummary();
+        console.log('📊 DROPPED STOPS SUMMARY:', summary);
+
+        // Auto-export dropped stops CSV
+        if (droppedStopsTracker.allDroppedStops.length > 0) {
+            exportDroppedStopsAsCSV();
+        }
+        
+        // Auto-export outliers CSV after optimization
+        try {
+            if (typeof window.exportOutliersCSV === 'function') {
+                await window.exportOutliersCSV();
+            }
+        } catch (error) {
+            console.log('⚠️ Could not auto-export outliers CSV:', error.message);
+        }
+
+
+
+        return networkRoutes;
+        
+    } catch (error) {
+        console.error('Network-constrained optimization failed:', error);
+        // Fallback to existing algorithm
+        return await getBusOptimizedRoutes();
+    }
+}
+
+/**
+ * Snap student pickup stops to nearest network nodes
+ */
+function snapStopsToNetwork(stops) {
+    const MAX_SNAP_DISTANCE = 500; // 500m max distance to snap to network
+    const snappedStops = [];
+    
+    stops.forEach(stop => {
+        const stopCoord = {
+            lat: parseFloat(stop.snapped_lat),
+            lng: parseFloat(stop.snapped_lon)
+        };
+        
+        let nearestNodeId = null;
+        let nearestDistance = Infinity;
+        
+        // Find closest network node
+        busRouteNetwork.nodes.forEach((node, nodeId) => {
+            const distance = haversine(stopCoord, node);
+            if (distance < nearestDistance && distance <= MAX_SNAP_DISTANCE) {
+                nearestDistance = distance;
+                nearestNodeId = nodeId;
+            }
+        });
+        
+        if (nearestNodeId !== null) {
+            const networkNode = busRouteNetwork.nodes.get(nearestNodeId);
+            snappedStops.push({
+                ...stop,
+                networkNodeId: nearestNodeId,
+                originalLat: parseFloat(stop.snapped_lat),
+                originalLng: parseFloat(stop.snapped_lon),
+                networkLat: networkNode.lat,
+                networkLng: networkNode.lng,
+                snapDistance: nearestDistance
+            });
+        } else {
+            console.warn(`⚠️ Stop ${stop.cluster_number} could not be snapped to network (too far)`);
+        }
+    });
+    
+    console.log(`📊 Successfully snapped ${snappedStops.length}/${stops.length} stops to network`);
+    return snappedStops;
+}
+
+/**
+ * Build routes constrained to the bus network using shortest paths
+ */
+function buildNetworkConstrainedRoutes(snappedStops, maxCapacity) {
+    const routes = [];
+    
+    // Group stops by network connectivity (connected components)
+    const connectedGroups = findConnectedStopGroups(snappedStops);
+    
+    connectedGroups.forEach((group, groupIndex) => {
+        console.log(`🔗 Processing connected group ${groupIndex + 1} with ${group.length} stops`);
+        
+        // Build routes within this connected group
+        const groupRoutes = buildRoutesInConnectedGroup(group, maxCapacity, groupIndex);
+        routes.push(...groupRoutes);
+    });
+    
+    return routes;
+}
+
+/**
+ * Find groups of stops that are connected in the network
+ */
+function findConnectedStopGroups(snappedStops) {
+    const visited = new Set();
+    const groups = [];
+    
+    snappedStops.forEach(stop => {
+        if (!visited.has(stop.networkNodeId)) {
+            const group = [];
+            const queue = [stop.networkNodeId];
+            const groupVisited = new Set();
+            
+            // BFS to find all connected stops
+            while (queue.length > 0) {
+                const nodeId = queue.shift();
+                
+                if (groupVisited.has(nodeId)) continue;
+                groupVisited.add(nodeId);
+                visited.add(nodeId);
+                
+                // Add stop at this node if exists
+                const stopsAtNode = snappedStops.filter(s => s.networkNodeId === nodeId);
+                group.push(...stopsAtNode);
+                
+                // Add connected nodes to queue
+                const neighbors = busRouteNetwork.adjacencyList.get(nodeId) || [];
+                neighbors.forEach(neighbor => {
+                    if (!groupVisited.has(neighbor.to)) {
+                        queue.push(neighbor.to);
+                    }
+                });
+            }
+            
+            if (group.length > 0) {
+                groups.push(group);
+            }
+        }
+    });
+    
+    return groups;
+}
+
+/**
+ * Build routes within a connected group using network paths
+ */
+function buildRoutesInConnectedGroup(group, maxCapacity, groupIndex) {
+    const routes = [];
+    
+    // Calculate distances between all stops using network paths
+    const stopDistances = calculateNetworkDistanceMatrix(group);
+    
+    // Build routes using a modified TSP approach with capacity constraints
+    const unvisitedStops = [...group];
+    let routeIndex = 1;
+    
+    while (unvisitedStops.length > 0) {
+        const route = buildSingleNetworkRoute(unvisitedStops, stopDistances, maxCapacity);
+        
+        if (route.stops.length > 0) {
+            const formattedRoute = formatNetworkRoute(route, groupIndex, routeIndex);
+            routes.push(formattedRoute);
+            routeIndex++;
+            
+            // Remove used stops
+            route.stops.forEach(stop => {
+                const index = unvisitedStops.findIndex(s => s.networkNodeId === stop.networkNodeId);
+                if (index !== -1) {
+                    unvisitedStops.splice(index, 1);
+                }
+            });
+        } else {
+            // Safety break
+            break;
+        }
+    }
+    
+    return routes;
+}
+
+/**
+ * Calculate shortest network distances between stops
+ */
+function calculateNetworkDistanceMatrix(stops) {
+    const distances = new Map();
+    
+    // Calculate distances between each pair of stops
+    for (let i = 0; i < stops.length; i++) {
+        for (let j = i + 1; j < stops.length; j++) {
+            const stop1 = stops[i];
+            const stop2 = stops[j];
+            
+            const distance = findShortestNetworkPath(stop1.networkNodeId, stop2.networkNodeId);
+            
+            const key1 = `${stop1.networkNodeId}-${stop2.networkNodeId}`;
+            const key2 = `${stop2.networkNodeId}-${stop1.networkNodeId}`;
+            
+            distances.set(key1, distance);
+            distances.set(key2, distance);
+        }
+    }
+    
+    return distances;
+}
+
+/**
+ * Find shortest path between two nodes using Dijkstra's algorithm
+ */
+function findShortestNetworkPath(startNodeId, endNodeId) {
+    if (startNodeId === endNodeId) return { distance: 0, path: [startNodeId] };
+    
+    const distances = new Map();
+    const previous = new Map();
+    const unvisited = new Set();
+    
+    // Initialize distances
+    busRouteNetwork.nodes.forEach((_, nodeId) => {
+        distances.set(nodeId, Infinity);
+        unvisited.add(nodeId);
+    });
+    distances.set(startNodeId, 0);
+    
+    while (unvisited.size > 0) {
+        // Find unvisited node with minimum distance
+        let currentNode = null;
+        let minDistance = Infinity;
+        
+        for (const nodeId of unvisited) {
+            const distance = distances.get(nodeId);
+            if (distance < minDistance) {
+                minDistance = distance;
+                currentNode = nodeId;
+            }
+        }
+        
+        if (currentNode === null || minDistance === Infinity) break;
+        
+        unvisited.delete(currentNode);
+        
+        if (currentNode === endNodeId) {
+            // Reconstruct path
+            const path = [];
+            let node = endNodeId;
+            while (node !== undefined) {
+                path.unshift(node);
+                node = previous.get(node);
+            }
+            
+            return { distance: distances.get(endNodeId), path };
+        }
+        
+        // Check neighbors
+        const neighbors = busRouteNetwork.adjacencyList.get(currentNode) || [];
+        neighbors.forEach(neighbor => {
+            if (!unvisited.has(neighbor.to)) return;
+            
+            const altDistance = distances.get(currentNode) + neighbor.distance;
+            if (altDistance < distances.get(neighbor.to)) {
+                distances.set(neighbor.to, altDistance);
+                previous.set(neighbor.to, currentNode);
+            }
+        });
+    }
+    
+    // No path found - return straight line distance as fallback
+    const startNode = busRouteNetwork.nodes.get(startNodeId);
+    const endNode = busRouteNetwork.nodes.get(endNodeId);
+    
+    return {
+        distance: haversine(startNode, endNode) * 2, // Penalty for no network path
+        path: [startNodeId, endNodeId],
+        isDirectPath: true
+    };
+}
+
+/**
+ * Build a single route using network constraints
+ */
+function buildSingleNetworkRoute(availableStops, distanceMatrix, maxCapacity) {
+    if (availableStops.length === 0) return { stops: [], totalStudents: 0 };
+    
+    const route = { stops: [], totalStudents: 0 };
+    
+    // Start with stop farthest from college (based on network distance)
+    let farthestStop = availableStops[0];
+    let maxDistanceFromCollege = 0;
+    
+    const collegeNode = findNearestNetworkNodeToCollege();
+    
+    availableStops.forEach(stop => {
+        const pathToCollege = findShortestNetworkPath(stop.networkNodeId, collegeNode);
+        if (pathToCollege.distance > maxDistanceFromCollege) {
+            maxDistanceFromCollege = pathToCollege.distance;
+            farthestStop = stop;
+        }
+    });
+    
+    route.stops.push(farthestStop);
+    route.totalStudents += parseInt(farthestStop.num_students);
+    
+    // Greedily add nearest stops that maintain network connectivity
+    while (true) {
+        const currentStop = route.stops[route.stops.length - 1];
+        let bestStop = null;
+        let shortestDistance = Infinity;
+        
+        availableStops.forEach(stop => {
+            if (route.stops.includes(stop)) return;
+            
+            const students = parseInt(stop.num_students);
+            if (route.totalStudents + students > maxCapacity) return;
+            
+            const key = `${currentStop.networkNodeId}-${stop.networkNodeId}`;
+            const pathDistance = distanceMatrix.get(key);
+            
+            if (pathDistance && pathDistance.distance < shortestDistance) {
+                shortestDistance = pathDistance.distance;
+                bestStop = stop;
+            }
+        });
+        
+        if (!bestStop) break;
+
+        // Final capacity check before adding the stop
+        const studentsToAdd = parseInt(bestStop.num_students);
+        if (route.totalStudents + studentsToAdd > maxCapacity) {
+            console.warn(`⚠️ Cannot add stop ${bestStop.cluster_number}: would exceed capacity (${route.totalStudents + studentsToAdd} > ${maxCapacity})`);
+            break;
+        }   
+        
+        route.stops.push(bestStop);
+        route.totalStudents += parseInt(bestStop.num_students);
+    }
+    
+    return route;
+}
+
+/**
+ * Find the network node closest to college
+ */
+function findNearestNetworkNodeToCollege() {
+    const collegeCoord = { lat: COLLEGE_COORDS[0], lng: COLLEGE_COORDS[1] };
+    
+    let nearestNodeId = null;
+    let nearestDistance = Infinity;
+    
+    busRouteNetwork.nodes.forEach((node, nodeId) => {
+        const distance = haversine(collegeCoord, node);
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestNodeId = nodeId;
+        }
+    });
+    
+    return nearestNodeId;
+}
+
+/**
+ * Format network route to match existing format
+ */
+function formatNetworkRoute(route, groupIndex, routeIndex) {
+    // Calculate total route distance using network paths
+    let totalNetworkDistance = 0;
+    
+    const collegeNode = findNearestNetworkNodeToCollege();
+    
+    // Distance between stops
+    for (let i = 0; i < route.stops.length - 1; i++) {
+        const path = findShortestNetworkPath(
+            route.stops[i].networkNodeId,
+            route.stops[i + 1].networkNodeId
+        );
+        totalNetworkDistance += path.distance;
+    }
+    
+    // Distance from last stop to college
+    const lastStopPath = findShortestNetworkPath(
+        route.stops[route.stops.length - 1].networkNodeId,
+        collegeNode
+    );
+    totalNetworkDistance += lastStopPath.distance;
+    
+    // Convert to km
+    const totalDistanceKm = totalNetworkDistance / 1000;
+    
+    return {
+        busId: `Bus G${groupIndex + 1}-R${routeIndex} (Network)`,
+        depot: findOptimalDepot({ stops: route.stops }),
+        stops: route.stops.map(stop => ({
+            ...stop,
+            // Use network coordinates for routing
+            snapped_lat: stop.networkLat.toString(),
+            snapped_lon: stop.networkLng.toString(),
+            original_lat: stop.originalLat,
+            original_lng: stop.originalLng,
+            snap_distance: stop.snapDistance
+        })),
+        totalStudents: route.totalStudents,
+        efficiency: `${((route.totalStudents / 55) * 100).toFixed(1)}%`,
+        totalDistance: `${totalDistanceKm.toFixed(1)} km`,
+        estimatedDistance: totalDistanceKm,
+        routeType: 'network-constrained',
+        isNetworkOptimized: true,
+        networkValidated: true
+    };
+}
+
+// ===== UTILITY FUNCTIONS =====
+
+function isValidCoordinate(lat, lng) {
+    return !isNaN(lat) && !isNaN(lng) && 
+           lat >= -90 && lat <= 90 && 
+           lng >= -180 && lng <= 180 &&
+           lat !== 0 && lng !== 0;
+}
+
+function haversine(coord1, coord2) {
+    const R = 6371000; // Earth's radius in meters
+    const dLat = toRad(coord2.lat - coord1.lat);
+    const dLng = toRad(coord2.lng - coord1.lng);
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(toRad(coord1.lat)) * Math.cos(toRad(coord2.lat)) *
+              Math.sin(dLng/2) * Math.sin(dLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+}
+
+function toRad(deg) {
+    return deg * (Math.PI / 180);
+}
+
+// ===== INTEGRATION WITH EXISTING CODE =====
+
+/**
+ * Enhanced main optimization function that tries network-constrained first
+ */
+async function optimizeWithNetworkConstraints(csvData) {
+    try {
+        console.log('🎯 Starting network-constrained optimization...');
+        
+        // Try network-constrained optimization first
+        const networkRoutes = await getBusOptimizedRoutesWithNetwork(csvData);
+        
+        if (networkRoutes && networkRoutes.length > 0) {
+            console.log(`✅ Network optimization successful: ${networkRoutes.length} routes`);
+            return networkRoutes;
+        } else {
+            throw new Error('No valid network routes generated');
+        }
+        
+    } catch (error) {
+        console.warn('⚠️ Network optimization failed, falling back to geometric optimization:', error);
+        return await getBusOptimizedRoutes();
+    }
+}
+
+// ===== EXPORT FOR USE =====
+// Replace your existing optimization call with:
+// const optimizedRoutes = await optimizeWithNetworkConstraints(csvData);
+
+// Functions are available globally in browser environment 
