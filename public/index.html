@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚌 Smart Bus Route Optimizer</title>
+    
+    <!-- Initialize Google Maps callback -->
+    <script>
+        // Global initMap function for Google Maps callback
+        window.initMap = function() {
+            console.log('🚀 Google Maps API loaded via callback. Initializing Smart Bus Route Optimizer...');
+            // Clear any waiting intervals
+            if (window.waitForGoogleMaps) {
+                clearInterval(window.waitForGoogleMaps);
+            }
+            // Small delay to ensure DOM is ready
+            setTimeout(() => {
+                if (document.readyState === 'complete') {
+                    if (typeof initializeApp === 'function') {
+                        initializeApp();
+                    }
+                } else {
+                    document.addEventListener('DOMContentLoaded', function() {
+                        if (typeof initializeApp === 'function') {
+                            initializeApp();
+                        }
+                    });
+                }
+            }, 100);
+        };
+    </script>
+    
+         <!-- Google Maps API -->
+     <script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAiVn2TbI7qSuTzw1EKvY4urq7V5aTZkZg&libraries=geometry,places&callback=initMap"></script>
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- PapaParse for CSV -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    
+    <!-- SheetJS for Excel -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/modern-styles.css">
+</head>
+<body>
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-spinner">
+            <i class="fas fa-spinner fa-spin"></i>
+            <p>Loading...</p>
+        </div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="app-container">
+        <!-- Floating Menu Button -->
+        <button class="floating-menu-btn" onclick="toggleSidebar()">
+            <i class="fas fa-bars"></i>
+        </button>
+
+                 <!-- Full Screen Map -->
+         <div id="map" class="fullscreen-map"></div>
+         
+                   <!-- Map Search Bar -->
+          <div class="map-search-container">
+              <div class="search-box">
+                  <input type="text" id="locationSearch" placeholder="Search for a location..." title="Enter coordinates (lat, lng) or keywords like 'college', 'center'" />
+                  <button onclick="searchLocation()" title="Search location">
+                      <i class="fas fa-search"></i>
+                  </button>
+              </div>
+              <!-- Search Recommendations Dropdown -->
+              <div class="search-recommendations" id="searchRecommendations" style="display: none;">
+                  <!-- Recommendations will be populated here -->
+              </div>
+          </div>
+         
+                   <!-- Map Controls -->
+          <div class="map-controls">
+              <button class="map-control-btn" onclick="toggleStreetView()" title="Street View">
+                  <i class="fas fa-street-view"></i>
+              </button>
+              <button class="map-control-btn" onclick="resetMapView()" title="Reset View">
+                  <i class="fas fa-home"></i>
+              </button>
+              <button class="map-control-btn" onclick="toggleFullscreen()" title="Fullscreen">
+                  <i class="fas fa-expand"></i>
+              </button>
+              <button class="map-control-btn" onclick="toggleMapType()" title="Change Map Type">
+                  <i class="fas fa-layer-group"></i>
+              </button>
+              <button class="map-control-btn" onclick="testGeocoding()" title="Test Geocoding API" style="background: #f59e0b; color: white;">
+                  <i class="fas fa-bug"></i>
+              </button>
+              <button class="map-control-btn" onclick="toggleRouteSelector()" title="Toggle Route Selector" style="background: #10b981; color: white;">
+                  <i class="fas fa-route"></i>
+              </button>
+              <button class="map-control-btn" onclick="toggleRulerMode()" title="Ruler Tool (R)" style="background: #8b5cf6; color: white;">
+                  <i class="fas fa-ruler"></i>
+              </button>
+              <button class="map-control-btn" onclick="toggleDraggableMode()" title="Draggable Mode (D)" style="background: #f59e0b; color: white;">
+                  <i class="fas fa-arrows-alt"></i>
+              </button>
+          </div>
+
+        <!-- Floating Route Selector -->
+        <div class="floating-route-selector" id="floatingRouteSelector" style="display: none;">
+            <div class="route-selector-header">
+                <h4><i class="fas fa-route"></i> Route Selection</h4>
+                <button class="close-route-selector" onclick="toggleRouteSelector()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            
+            <!-- Route Search -->
+            <div class="route-search-container">
+                <!-- Search Mode Toggle -->
+                <div class="search-mode-toggle">
+                    <button class="search-mode-btn active" id="busNumberMode" onclick="setSearchMode('bus')">
+                        <i class="fas fa-bus"></i> Bus Number
+                    </button>
+                    <button class="search-mode-btn" id="areaMode" onclick="setSearchMode('area')">
+                        <i class="fas fa-map-marker-alt"></i> Area
+                    </button>
+                </div>
+                
+                <div class="search-input-wrapper">
+                    <input type="text" id="routeSearchInput" placeholder="Search routes by bus number..." 
+                           oninput="filterRoutes()">
+                    <i class="fas fa-search search-icon"></i>
+                    <button class="clear-search-btn" onclick="clearRouteSearch()" title="Clear search">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="search-results-info" id="searchResultsInfo" style="display: none;">
+                    <span id="searchResultsCount">0</span> routes found
+                </div>
+            </div>
+            
+                         <!-- Quick Filters -->
+             <div class="quick-filters">
+                 <button class="filter-btn active" data-filter="all">
+                     <i class="fas fa-globe"></i> All
+                 </button>
+                 <button class="filter-btn" data-filter="high-efficiency">
+                     <i class="fas fa-star"></i> High
+                 </button>
+                 <button class="filter-btn" data-filter="medium-efficiency">
+                     <i class="fas fa-star-half-alt"></i> Medium
+                 </button>
+                 <button class="filter-btn" data-filter="low-efficiency">
+                     <i class="fas fa-star"></i> Low
+                 </button>
+                 
+                 <!-- Select All / Deselect All Buttons -->
+                 <div class="select-all-controls">
+                     <button class="select-all-btn" onclick="selectAllRoutes()">
+                         <i class="fas fa-check-square"></i> Select All
+                     </button>
+                     <button class="deselect-all-btn" onclick="deselectAllRoutes()">
+                         <i class="fas fa-square"></i> Deselect All
+                     </button>
+                 </div>
+             </div>
+
+            <!-- Individual Route Toggles -->
+            <div class="route-toggles" id="routeToggles">
+                <!-- Route toggles will be generated here -->
+            </div>
+        </div>
+
+        <!-- Floating Action Button -->
+        <button class="floating-action-btn" onclick="toggleRouteSelector()" id="floatingActionBtn" style="display: none;">
+            <i class="fas fa-route"></i>
+        </button>
+
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h3><i class="fas fa-cog"></i> Controls</h3>
+                <button class="close-sidebar" onclick="toggleSidebar()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+
+            <!-- Data Input Section -->
+            <div class="sidebar-section">
+                <h4><i class="fas fa-upload"></i> Data Input</h4>
+                <div class="file-upload-group">
+                    <div class="file-input-wrapper">
+                        <label for="studentFile">
+                            <i class="fas fa-users"></i>
+                            <span>Student Assignments</span>
+                        </label>
+                        <input type="file" id="studentFile" accept=".csv" />
+                        <div class="file-status" id="studentFileStatus"></div>
+                    </div>
+                    
+                    <div class="file-input-wrapper">
+                        <label for="stopsFile">
+                            <i class="fas fa-map-marker-alt"></i>
+                            <span>Snapped Stops</span>
+                        </label>
+                        <input type="file" id="stopsFile" accept=".csv" />
+                        <div class="file-status" id="stopsFileStatus"></div>
+                    </div>
+                    
+                    <div class="file-input-wrapper">
+                        <label for="depotsFile">
+                            <i class="fas fa-warehouse"></i>
+                            <span>Depots</span>
+                        </label>
+                        <input type="file" id="depotsFile" accept=".csv" />
+                        <div class="file-status" id="depotsFileStatus"></div>
+                    </div>
+                </div>
+                
+                <button class="btn btn-primary btn-full" onclick="loadData()" id="loadDataBtn">
+                    <i class="fas fa-database"></i> Load Data
+                </button>
+            </div>
+
+            <!-- Configuration Section -->
+            <div class="sidebar-section">
+                <h4><i class="fas fa-sliders-h"></i> Configuration</h4>
+                <div class="config-group">
+                    <div class="config-item">
+                        <label for="maxCapacity">Bus Capacity</label>
+                        <input type="number" id="maxCapacity" value="55" min="1" max="100" />
+                    </div>
+                    
+                    <div class="config-item">
+                        <label for="shiftTime">Shift Time</label>
+                        <select id="shiftTime">
+                            <option value="8am">8:00 AM</option>
+                            <option value="10am">10:00 AM</option>
+                            <option value="3pm">3:00 PM</option>
+                            <option value="5pm">5:00 PM</option>
+                        </select>
+                    </div>
+                    
+                    <div class="config-item">
+                        <label for="dayOfWeek">Day of Week</label>
+                        <select id="dayOfWeek">
+                            <option value="monday">Monday</option>
+                            <option value="tuesday">Tuesday</option>
+                            <option value="wednesday">Wednesday</option>
+                            <option value="thursday">Thursday</option>
+                            <option value="friday">Friday</option>
+                            <option value="saturday">Saturday</option>
+                        </select>
+                    </div>
+                    
+                    <div class="config-item">
+                        <label for="roadWidthValidation">
+                            <input type="checkbox" id="roadWidthValidation" checked>
+                            Road Width Validation
+                        </label>
+                        <small style="color: #6b7280; display: block; margin-top: 4px;">
+                            Check for narrow roads unsuitable for buses
+                        </small>
+                    </div>
+                    
+                    <div class="config-item">
+                        <label for="automaticRerouting">
+                            <input type="checkbox" id="automaticRerouting" checked>
+                            Automatic Rerouting
+                        </label>
+                        <small style="color: #6b7280; display: block; margin-top: 4px;">
+                            Automatically reroute when road width validation fails
+                        </small>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Optimization Section -->
+            <div class="sidebar-section">
+                <h4><i class="fas fa-route"></i> Optimization</h4>
+                <div class="action-buttons">
+                    <button class="btn btn-success btn-full" onclick="optimizeRoutes()" id="optimizeBtn" disabled>
+                        <i class="fas fa-magic"></i> Optimize Routes
+                    </button>
+                    
+                    <button class="btn btn-info btn-full" onclick="visualizeData()">
+                        <i class="fas fa-map"></i> Show Data
+                    </button>
+                    
+                    <button class="btn btn-secondary btn-full" onclick="visualizeRouteNetwork()">
+                        <i class="fas fa-route"></i> Route Network
+                    </button>
+                    
+                    <button class="btn btn-warning btn-full" onclick="exportResults()" id="exportBtn" disabled>
+                        <i class="fas fa-download"></i> Export Basic
+                    </button>
+                    
+                    <button class="btn btn-success btn-full" onclick="exportComprehensiveResults()" id="exportComprehensiveBtn" disabled>
+                        <i class="fas fa-file-csv"></i> Export CSV
+                    </button>
+                    
+                    <button class="btn btn-primary btn-full" onclick="exportComprehensiveExcel()" id="exportExcelBtn" disabled>
+                        <i class="fas fa-file-excel"></i> Export Excel
+                    </button>
+                    
+                    <button class="btn btn-warning btn-full" onclick="debugExcelExport()" style="background: #f59e0b; color: white;">
+                        <i class="fas fa-bug"></i> Debug Excel Export
+                    </button>
+                </div>
+            </div>
+
+            <!-- Cached Routes Section -->
+            <div class="sidebar-section">
+                <h4><i class="fas fa-archive"></i> Cached Routes</h4>
+                <div class="form-group" style="margin-bottom: 1rem;">
+                    <label for="cachedRoutesSelect" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">
+                        <i class="fas fa-history"></i> Load Saved Routes:
+                    </label>
+                    <select id="cachedRoutesSelect" class="input-control" onchange="loadCachedRoutes(this.value)" style="width: 100%; padding: 0.5rem; margin-bottom: 0.5rem;">
+                        <option value="">Select cached routes...</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom: 1rem;">
+                    <label for="routeNameInput" style="display: block; margin-bottom: 0.5rem; font-weight: 600;">
+                        <i class="fas fa-tag"></i> Save Current Routes As:
+                    </label>
+                    <input type="text" id="routeNameInput" class="input-control" placeholder="Enter route name..." style="width: 100%; padding: 0.5rem; margin-bottom: 0.5rem;">
+                </div>
+                <div class="action-buttons">
+                    <button onclick="saveCurrentRoutesWithName()" class="btn btn-primary btn-full" id="saveRoutesBtn" disabled>
+                        <i class="fas fa-save"></i> Save Routes
+                    </button>
+                    <button onclick="refreshCachedRoutesList()" class="btn btn-secondary btn-full">
+                        <i class="fas fa-sync-alt"></i> Refresh List
+                    </button>
+                    <button onclick="clearAllCachedRoutes()" class="btn btn-warning btn-full" style="background: #f59e0b; color: white;">
+                        <i class="fas fa-trash-alt"></i> Clear All Cached Routes
+                    </button>
+                </div>
+            </div>
+
+            <!-- Metrics Section -->
+            <div class="sidebar-section" id="metricsSection" style="display: none;">
+                <h4><i class="fas fa-chart-bar"></i> Metrics</h4>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-icon">
+                            <i class="fas fa-users"></i>
+                        </div>
+                        <div class="metric-content">
+                            <div class="metric-value" id="totalStudents">0</div>
+                            <div class="metric-label">Total Students</div>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-icon">
+                            <i class="fas fa-bus"></i>
+                        </div>
+                        <div class="metric-content">
+                            <div class="metric-value" id="requiredBuses">0</div>
+                            <div class="metric-label">Required Buses</div>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-icon">
+                            <i class="fas fa-map-marker-alt"></i>
+                        </div>
+                        <div class="metric-content">
+                            <div class="metric-value" id="totalStops">0</div>
+                            <div class="metric-label">Total Stops</div>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-card">
+                        <div class="metric-icon">
+                            <i class="fas fa-warehouse"></i>
+                        </div>
+                        <div class="metric-content">
+                            <div class="metric-value" id="totalDepots">0</div>
+                            <div class="metric-label">Available Depots</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status Section -->
+            <div class="sidebar-section">
+                <div id="status" class="status-display"></div>
+            </div>
+        </aside>
+    </div>
+
+         <!-- Toast Notifications -->
+     <div id="toastContainer" class="toast-container"></div>
+     
+     <!-- Street View Container -->
+     <div class="street-view-container" id="streetViewContainer">
+         <div class="street-view-header">
+             <span>Street View</span>
+             <button class="street-view-close" onclick="closeStreetView()">
+                 <i class="fas fa-times"></i>
+             </button>
+         </div>
+         <div id="streetView" style="width: 100%; height: calc(100% - 40px);"></div>
+     </div>
+
+    <!-- Scripts -->
+    <script src="js/utils/routeCache.js"></script>
+    <script src="js/optimization/googleAPI.js"></script>
+    <script src="js/visualization/routeNetworkVisualizer.js"></script>
+    <script src="js/modern-app.js"></script>
+</body>
+</html>
