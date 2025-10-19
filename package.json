@@ -2,11 +2,22 @@
   "name": "smart-bus-route-optimizer",
   "version": "1.0.0",
   "description": "A smart bus route optimization system with Google Maps integration",
-  "main": "server.js",
+  "main": "Route_optimizer/api/index.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "npx serve Route_optimizer -p 3000",
+    "build": "echo 'Static site - no build step required'",
+    "start": "npx serve Route_optimizer -p 3000"
   },
+  "keywords": [
+    "bus",
+    "route",
+    "optimization",
+    "google-maps",
+    "transportation",
+    "logistics"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
@@ -14,7 +25,11 @@
     "google-auth-library": "^10.2.1",
     "node-fetch": "^3.3.2"
   },
+  "devDependencies": {
+    "serve": "^14.2.1"
+  },
   "engines": {
     "node": ">=16.0.0"
   }
 }
+
