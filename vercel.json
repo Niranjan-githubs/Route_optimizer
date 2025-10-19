@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "Route_optimizer/server.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "Route_optimizer/**/*",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/Route_optimizer/server.js"
+    },
+    {
+      "src": "/",
+      "dest": "/Route_optimizer/index.html"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/Route_optimizer/$1"
+    }
+  ]
+}
