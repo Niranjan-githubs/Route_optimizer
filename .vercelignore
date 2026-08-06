@@ -1,0 +1,22 @@
+# Ignore development files
+node_modules/
+.git/
+.gitignore
+README.md
+package.json
+package-lock.json
+yarn.lock
+
+# Ignore large data files that aren't needed for deployment
+data_cleaning/
+*.py
+*.ipynb
+
+# Ignore development tools
+.vscode/
+.idea/
+
+# Keep only the essential files for the web app
+!Route_optimizer/
+!vercel.json
+

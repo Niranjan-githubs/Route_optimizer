@@ -15,6 +15,13 @@ app.use(cors({
     credentials: true
 }));
 
+app.use(express.static(__dirname));
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+
+
 const projectId = "stunning-shadow-454718-r7";
 
 
@@ -526,3 +533,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+// Export the app for Vercel
+module.exports = app;
